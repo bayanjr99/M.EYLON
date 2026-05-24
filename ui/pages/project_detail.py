@@ -85,10 +85,30 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     df = df_master[df_master["project_id"] == project_id] if not df_master.empty else df_master
 
     if df.empty:
+        # אבחון - להראות בדיוק למה אין דאטה
+        import os
+        from pipeline import MASTER_PARQUET
+        master_exists = MASTER_PARQUET.exists()
+        master_size = MASTER_PARQUET.stat().st_size if master_exists else 0
+        all_ids = sorted(df_master["project_id"].dropna().unique()) if not df_master.empty else []
+        diag = (
+            f"<div style='background:#FEF2F2;border:1px solid #FECACA;"
+            f"border-radius:8px;padding:10px 14px;margin:10px 0;font-size:11px;"
+            f"font-family:monospace;color:#7F1D1D;direction:ltr;text-align:left'>"
+            f"<b>אבחון:</b><br>"
+            f"CWD: {os.getcwd()}<br>"
+            f"master.parquet path: {MASTER_PARQUET}<br>"
+            f"exists: {master_exists}, size: {master_size:,} bytes<br>"
+            f"master rows total: {len(df_master):,}<br>"
+            f"project_ids in master: {all_ids}<br>"
+            f"looking for project_id: <b>{project_id!r}</b><br>"
+            f"</div>"
+        )
         empty_state(
             icon="ti-database-off",
             title=f"אין עדיין נתונים לפרויקט {project_name}",
             body_html=(
+                diag +
                 "כדי לטעון נתונים:"
                 "<ul>"
                 f"<li>שים קבצים ב-<code>data/projects/{project_id}/&lt;MM-YYYY&gt;/</code></li>"

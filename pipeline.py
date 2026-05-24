@@ -26,12 +26,15 @@ logger = logging.getLogger(__name__)
 
 
 # ── נתיבים קבועים ─────────────────────────────────────────────
-DATA_ROOT = Path("data")
+# Anchor everything to the project root (this file's parent) so paths
+# work regardless of where streamlit was invoked from (local vs cloud).
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = PROJECT_ROOT / "data"
 PROJECTS_ROOT = DATA_ROOT / "projects"
 PROJECTS_REGISTRY = DATA_ROOT / "projects_registry.xlsx"
 TOOLS_REGISTRY = DATA_ROOT / "tools_registry.xlsx"
 MASTER_PARQUET = DATA_ROOT / "master.parquet"
-CACHE_ROOT = Path("output") / "cache"
+CACHE_ROOT = PROJECT_ROOT / "output" / "cache"
 
 
 # ── סכמת master.parquet ───────────────────────────────────────
