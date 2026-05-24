@@ -262,6 +262,26 @@ def empty_state(
 
 
 # ── Top bar ──────────────────────────────────────────────────
+import base64
+import mimetypes
+from functools import lru_cache
+from pathlib import Path
+
+
+@lru_cache(maxsize=8)
+def _logo_data_uri(logo_path: str) -> str | None:
+    """קורא תמונה ומחזיר data URI מוטמע. ממוטמן.
+
+    Returns None אם הקובץ לא קיים - לאפשר fallback לאמוג'י.
+    """
+    p = Path(logo_path)
+    if not p.exists():
+        return None
+    mime = mimetypes.guess_type(p.name)[0] or "image/png"
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
 def render_top_bar(
     company_name: str,
     system_name: str,
@@ -270,17 +290,33 @@ def render_top_bar(
     status_text: str = "המערכת תקינה",
     meta_text: str = "",
     logo_emoji: str = "🏗️",
+    logo_path: str | None = None,
 ) -> None:
-    """כותרת עליונה דביקה. status: ok/warn/bad → צבע ה-pill."""
+    """כותרת עליונה דביקה. status: ok/warn/bad → צבע ה-pill.
+
+    logo_path: נתיב יחסי לתמונת לוגו (PNG/JPG/SVG). אם קיים, מוצג כתמונה
+    מוטמעת ב-base64; אחרת fallback ל-logo_emoji.
+    """
     status_cls = {"ok": "sys-pill", "warn": "sys-pill warn", "bad": "sys-pill bad"}.get(status, "sys-pill")
     meta_html = (
         f'<span class="meta-pill"><i class="ti ti-calendar"></i>{meta_text}</span>'
         if meta_text else ""
     )
+
+    logo_inner = f'<span style="font-size:22px">{logo_emoji}</span>'
+    if logo_path:
+        data_uri = _logo_data_uri(logo_path)
+        if data_uri:
+            logo_inner = (
+                f'<img src="{data_uri}" alt="logo" '
+                f'style="height:100%;width:100%;object-fit:contain;'
+                f'border-radius:50%;padding:3px;background:#fff" />'
+            )
+
     st.markdown(
         f'<div class="top-bar">'
         f'  <div class="top-bar-brand">'
-        f'    <div class="top-bar-logo">{logo_emoji}</div>'
+        f'    <div class="top-bar-logo">{logo_inner}</div>'
         f'    <div class="top-bar-title">'
         f'      <span>{company_name}</span>'
         f'      <span class="sep">·</span>'

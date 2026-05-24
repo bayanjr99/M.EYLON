@@ -94,6 +94,7 @@ render_top_bar(
     status=_status,
     status_text=_status_txt,
     meta_text=_meta,
+    logo_path="static/meylon_aviv_logo.png",
 )
 
 
