@@ -174,6 +174,31 @@ def detect_large_transactions(df_master: pd.DataFrame) -> pd.DataFrame:
     return flagged[available].reset_index(drop=True)
 
 
+def detect_unassigned_transactions(df_master: pd.DataFrame) -> pd.DataFrame:
+    """בדיקה 6: תנועות 'יתומות' - ללא ספק וללא פרטים משמעותיים.
+
+    קריטריון: source='chashbashevet' וגם supplier ריק וגם description קצר/ריק.
+    תנועות כאלה לא ניתן לייחס לפעילות כלשהי - חשוד.
+    """
+    cols = ["project_id", "month", "date", "account_num", "account_name",
+            "supplier", "description", "amount"]
+    if df_master.empty:
+        return pd.DataFrame(columns=cols)
+
+    src_col = df_master.get("source", pd.Series(["chashbashevet"] * len(df_master)))
+    mask_src = src_col == "chashbashevet"
+    sup = df_master.get("supplier", pd.Series([""] * len(df_master))).fillna("").astype(str)
+    desc = df_master.get("description", pd.Series([""] * len(df_master))).fillna("").astype(str)
+    mask_empty = (sup.str.strip() == "") & (desc.str.strip().str.len() < 4)
+    mask_significant = df_master["amount"].abs() > 1000  # רק חיובים משמעותיים
+
+    flagged = df_master[mask_src & mask_empty & mask_significant].copy()
+    if flagged.empty:
+        return pd.DataFrame(columns=cols)
+    available = [c for c in cols if c in flagged.columns]
+    return flagged[available].reset_index(drop=True)
+
+
 def detect_suspicious_descriptions(df_master: pd.DataFrame) -> pd.DataFrame:
     """בדיקה 5: תנועות עם מילות מפתח חשודות בתיאור."""
     cols = ["project_id", "month", "date", "account_num", "supplier",
@@ -267,6 +292,19 @@ def run_all_checks(
             "severity": "medium",
             "entity": str(r.get("account_num", "")),
             "details": f"{r.get('supplier', '')}: {r.get('description', '')} ({r['amount']:,.0f} ש\"ח)",
+            "estimated_impact_nis": float(abs(r["amount"])),
+        })
+
+    # בדיקה 6 - תנועות יתומות
+    orphans = detect_unassigned_transactions(df_master)
+    for _, r in orphans.iterrows():
+        rows.append({
+            "project_id": r.get("project_id", project_id),
+            "month": r.get("month", ""),
+            "check_type": "unassigned_transaction",
+            "severity": "medium",
+            "entity": str(r.get("account_num", "")),
+            "details": f"תנועה ללא ספק/פרטים: {r.get('account_name', '')} ({r['amount']:,.0f} ש\"ח)",
             "estimated_impact_nis": float(abs(r["amount"])),
         })
 

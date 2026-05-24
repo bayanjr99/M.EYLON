@@ -175,12 +175,30 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
         st.dataframe(disp.round(0), use_container_width=True, hide_index=True)
 
 
-# ─── Tab 2: הכנסות ──────────────────────────────────────────
+# ─── Tab 2: הכנסות (חשבוניות-לרמת-פירוט) ────────────────────
+import re as _re
+
+_INVOICE_NUM_RE = _re.compile(r"(?:חשבונית|חש\"מ|חש'?\s*מס|אסמכתא)\s*[#:]?\s*(\d{3,})")
+
+
+def _extract_invoice_num(description: str) -> str:
+    """מנסה לחלץ מספר חשבונית מתוך 'פרטים'."""
+    if not isinstance(description, str):
+        return ""
+    m = _INVOICE_NUM_RE.search(description)
+    if m:
+        return m.group(1)
+    # fallback: מספר 4+ ספרות בודד בתחילת/באמצע ה-string
+    m = _re.search(r"\b(\d{4,})\b", description)
+    return m.group(1) if m else ""
+
+
 def _tab_income(df: pd.DataFrame) -> None:
-    sec("הכנסות הפרויקט")
+    # הכנסות = amount שלילי (חשבונות 927/951/7367 נורמלו לסלילי) או מילות מפתח
     income = df[df["amount"] < 0] if "amount" in df.columns else df.iloc[0:0]
     income_kw = _filter_by_keywords(df, KEYWORD_CATEGORIES["income"])
-    income_all = pd.concat([income, income_kw]).drop_duplicates() if not income_kw.empty else income
+    income_all = (pd.concat([income, income_kw]).drop_duplicates()
+                  if not income_kw.empty else income)
 
     if income_all.empty:
         ins("blue", "ℹ️", "אין הכנסות מתועדות",
@@ -188,49 +206,128 @@ def _tab_income(df: pd.DataFrame) -> None:
             "'הכנסות', 'חיוב ספק'. ודא שהמאזן/כרטיס ההנהלה כולל אותם.")
         return
 
-    total = float(-income_all.loc[income_all["amount"] < 0, "amount"].sum()
+    total = float(income_all.loc[income_all["amount"] < 0, "amount"].sum() * -1
                   + income_all.loc[income_all["amount"] > 0, "amount"].sum())
-    st.metric("סה\"כ הכנסות", _fmt_money(total))
+    num_inv = int(len(income_all))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("סה\"כ הכנסות", _fmt_money(total))
+    c2.metric("מספר חשבוניות", str(num_inv))
+    if "month" in income_all.columns and not income_all.empty:
+        n_months = income_all["month"].nunique()
+        c3.metric("ממוצע חודשי", _fmt_money(total / n_months) if n_months else "—")
 
+    # ── חשבוניות לפי חודש ──
     sec("הכנסות לפי חודש")
     if "month" in income_all.columns:
         monthly = income_all.groupby("month")["amount"].sum().abs().reset_index()
         monthly.columns = ["חודש", "סכום"]
-        st.dataframe(monthly.round(0), use_container_width=True, hide_index=True)
+        monthly["סכום"] = monthly["סכום"].round(0)
+        st.dataframe(monthly, use_container_width=True, hide_index=True)
 
-    sec("פירוט")
-    cols_show = [c for c in ["date", "account_name", "supplier", "description", "amount"]
-                 if c in income_all.columns]
-    st.dataframe(income_all[cols_show], use_container_width=True, hide_index=True)
+    # ── טבלת חשבוניות עם date/customer/invoice#/amount/status ──
+    sec("פירוט חשבוניות מכירה")
+    invoice_df = income_all.copy()
+    invoice_df["amount_abs"] = invoice_df["amount"].abs()
+    if "description" in invoice_df.columns:
+        invoice_df["invoice_num"] = invoice_df["description"].apply(_extract_invoice_num)
+    else:
+        invoice_df["invoice_num"] = ""
+    invoice_df["status"] = "—"  # placeholder - דורש מעקב גבייה חיצוני
+
+    show_cols = []
+    rename_map = {}
+    for src, heb in [
+        ("date", "תאריך"),
+        ("supplier", "לקוח"),
+        ("invoice_num", "מס' חשבונית"),
+        ("amount_abs", "סכום (₪)"),
+        ("month", "חודש"),
+        ("status", "סטטוס גבייה"),
+        ("description", "פרטים"),
+    ]:
+        if src in invoice_df.columns:
+            show_cols.append(src)
+            rename_map[src] = heb
+
+    disp = invoice_df[show_cols].copy()
+    if "amount_abs" in disp.columns:
+        disp["amount_abs"] = disp["amount_abs"].round(0)
+    disp = disp.sort_values("date" if "date" in show_cols else show_cols[0])
+    disp.columns = [rename_map[c] for c in show_cols]
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    ins("blue", "ℹ️", "סטטוס גבייה",
+        "סטטוס שולם/פתוח לא מנוטר אוטומטית מחשבשבת. לתצוגה מלאה - "
+        "חבר קובץ <code>collections.xlsx</code> או מערכת CRM.")
 
 
-# ─── Tab 3: הוצאות ──────────────────────────────────────────
+# ─── Tab 3: הוצאות (עם drill-down) ──────────────────────────
 def _tab_expenses(df: pd.DataFrame) -> None:
     sec("הוצאות לפי קטגוריה")
-    cat = project_aggregator.by_category(df)
-    if cat.empty:
+    # רק חשבשבת ורק חיובי (הוצאות בפועל)
+    exp_df = df[(df["source"] == "chashbashevet")] if "source" in df.columns else df.iloc[0:0]
+    exp_df = exp_df[exp_df["amount"] > 0] if "amount" in exp_df.columns else exp_df
+
+    if exp_df.empty:
         ins("blue", "ℹ️", "אין הוצאות מתועדות", "טען קובץ chashbashevet.xlsx לחודש.")
         return
 
-    disp = cat.copy()
-    disp["total_amount"] = disp["total_amount"].round(0)
-    disp.columns = ["קטגוריה", "סכום", "תנועות", "% מסך"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    # ── סיכום עליון ──
+    total_exp = float(exp_df["amount"].sum())
+    st.metric("סה\"כ הוצאות בפרויקט", _fmt_money(total_exp))
 
-    sec("חלוקה לפי תת-קטגוריות")
-    breakdown = {}
+    # ── חלוקה לקטגוריות לפי מילות מפתח + "אחר" לכל מה שלא נופל ──
+    buckets: dict[str, pd.DataFrame] = {}
+    matched_indices: set = set()
     for label, keywords in KEYWORD_CATEGORIES.items():
         if label == "income":
             continue
-        sub = _filter_by_keywords(df, keywords)
-        sub = sub[sub["amount"] > 0] if "amount" in sub.columns else sub
+        sub = _filter_by_keywords(exp_df, keywords)
         if not sub.empty:
-            breakdown[label] = float(sub["amount"].sum())
+            buckets[label] = sub
+            matched_indices.update(sub.index.tolist())
 
-    if breakdown:
-        rows = [{"קטגוריה": _label_he(k), "סה\"כ (₪)": round(v, 0)}
-                for k, v in sorted(breakdown.items(), key=lambda x: -x[1])]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    # שורות שלא תפסו אף קטגוריה
+    other = exp_df[~exp_df.index.isin(matched_indices)]
+    if not other.empty:
+        buckets["other"] = other
+
+    # ── טבלת סיכום ──
+    summary_rows = []
+    for label, sub in buckets.items():
+        s = float(sub["amount"].sum())
+        summary_rows.append({
+            "קטגוריה": _label_he(label),
+            "סכום (₪)": round(s, 0),
+            "תנועות": int(len(sub)),
+            "% מסך": round(s / total_exp * 100, 1) if total_exp else 0,
+            "_key": label,
+        })
+    summary_rows.sort(key=lambda r: -r["סכום (₪)"])
+    summary_df = pd.DataFrame(summary_rows).drop(columns=["_key"])
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    # ── Drill-down: expander לכל קטגוריה ──
+    sec("פירוט תנועות לכל קטגוריה", meta="לחץ על קטגוריה לפתיחה")
+    for row in summary_rows:
+        label_he = row["קטגוריה"]
+        key = row["_key"]
+        sub = buckets[key]
+        with st.expander(
+            f"{label_he} — {_fmt_money(row['סכום (₪)'])} · {row['תנועות']} תנועות",
+            expanded=False,
+        ):
+            cols = [c for c in ["date", "account_num", "account_name", "supplier",
+                                "description", "debit", "credit", "amount", "month"]
+                    if c in sub.columns]
+            disp = sub[cols].copy().sort_values("date" if "date" in cols else cols[0])
+            heb_names = {
+                "date": "תאריך", "account_num": "חשבון", "account_name": "שם חשבון",
+                "supplier": "ספק", "description": "פרטים",
+                "debit": "חובה", "credit": "זכות", "amount": "סכום", "month": "חודש",
+            }
+            disp.columns = [heb_names.get(c, c) for c in disp.columns]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── Tab 4: עובדים ושכר ─────────────────────────────────────
@@ -287,21 +384,122 @@ def _tab_suppliers(df: pd.DataFrame) -> None:
         st.dataframe(subs[cols], use_container_width=True, hide_index=True)
 
 
-# ─── Tab 6: סולר ואחזקה ─────────────────────────────────────
+# ─── Tab 6: סולר ואחזקה (מודול מלא) ─────────────────────────
 def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
-    sec("תדלוקים")
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
+    hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
+    # קניות סולר מחשבשבת (מילות מפתח: סולר/דלק)
+    fuel_purchases = _filter_by_keywords(df, KEYWORD_CATEGORIES["fuel"])
+    if "source" in fuel_purchases.columns:
+        fuel_purchases = fuel_purchases[fuel_purchases["source"] == "chashbashevet"]
+    if "amount" in fuel_purchases.columns:
+        fuel_purchases = fuel_purchases[fuel_purchases["amount"] > 0]
+
+    # ── KPIs עליונים ──
+    total_liters = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0.0
+    total_cost = float(fuel_purchases["amount"].sum()) if not fuel_purchases.empty else 0.0
+    num_fuelings = int(len(solar))
+    avg_price = total_cost / total_liters if total_liters > 0 else 0.0
+    total_work_h = float(hours["work_hours"].sum()) if "work_hours" in hours.columns and not hours.empty else 0.0
+    cost_per_hour = total_cost / total_work_h if total_work_h > 0 else 0.0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("סה\"כ ליטרים", f"{total_liters:,.0f}")
+    c2.metric("סה\"כ עלות", _fmt_money(total_cost))
+    c3.metric("₪ / ליטר", f"{avg_price:.2f}" if avg_price else "—")
+    c4.metric("₪ / שעת עבודה", f"{cost_per_hour:,.0f}" if cost_per_hour else "—")
+    st.caption(f"{num_fuelings} תדלוקים · {int(total_work_h):,} שעות עבודה")
+
+    # ── מאזן מלאי (placeholder) ──
+    sec("מאזן מלאי סולר", meta="מצריך קלט ידני של פתיחה/סגירה")
+    st.markdown(
+        f"""<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;
+        padding:14px 18px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+            letter-spacing:.8px;font-weight:700">מלאי פתיחה</div>
+            <div style="font-size:18px;font-weight:800;color:#94A3B8">— ל'</div></div>
+          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+            letter-spacing:.8px;font-weight:700">+ קניות</div>
+            <div style="font-size:18px;font-weight:800;color:var(--status-good)">
+              {total_liters:,.0f} ל'</div></div>
+          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+            letter-spacing:.8px;font-weight:700">− שימושים</div>
+            <div style="font-size:18px;font-weight:800;color:var(--status-bad)">
+              {total_liters:,.0f} ל'</div></div>
+          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+            letter-spacing:.8px;font-weight:700">= מלאי סגירה</div>
+            <div style="font-size:18px;font-weight:800;color:#94A3B8">— ל'</div></div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    st.caption("מלאי פתיחה/סגירה לא מנוטרים אוטומטית. לתצוגה מלאה - הוסף קובץ "
+               "<code>fuel_inventory.xlsx</code> עם עמודות month/opening_l/closing_l.")
+
+    # ── קניות סולר לפי ספק ──
+    sec("קניות סולר לפי ספק")
+    if fuel_purchases.empty:
+        st.caption("לא זוהו רכישות סולר ב-chashbashevet (חשבונות עם 'סולר'/'דלק').")
+    else:
+        by_sup = fuel_purchases.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
+        by_sup.columns = ["ספק", "סה\"כ (₪)", "חשבוניות"]
+        by_sup["סה\"כ (₪)"] = by_sup["סה\"כ (₪)"].round(0)
+        st.dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
+                     use_container_width=True, hide_index=True)
+
+        with st.expander("פירוט חשבוניות סולר"):
+            cols = [c for c in ["date", "supplier", "description", "amount", "month"]
+                    if c in fuel_purchases.columns]
+            st.dataframe(fuel_purchases[cols].sort_values("date" if "date" in cols else cols[0]),
+                         use_container_width=True, hide_index=True)
+
+    # ── צריכה לפי רכב/כלי ──
+    sec("צריכה לפי כלי", meta="מתוך solar.xlsx")
     if solar.empty:
         ins("blue", "ℹ️", "אין נתוני תדלוק", "טען <code>solar.xlsx</code> לחודש.")
     else:
-        total_l = float(solar["liters"].sum()) if "liters" in solar.columns else 0
-        st.metric("סה\"כ ליטרים", f"{total_l:,.0f}")
-        cols = [c for c in ["date", "tool_name", "license_num", "liters", "engine_hours"]
-                if c in solar.columns]
-        st.dataframe(solar[cols], use_container_width=True, hide_index=True)
+        by_tool = solar.groupby(["license_num", "tool_name"])["liters"].agg(
+            ["sum", "count"]
+        ).reset_index()
+        by_tool.columns = ["מס' רישוי", "שם כלי", "סה\"כ ליטרים", "תדלוקים"]
+        by_tool["סה\"כ ליטרים"] = by_tool["סה\"כ ליטרים"].round(0)
 
-    sec("אחזקות (מוסך, תיקונים, חלפים)")
+        # הוסף עלות משוערת (משערך לפי avg_price)
+        if avg_price > 0:
+            by_tool["עלות משוערת (₪)"] = (by_tool["סה\"כ ליטרים"] * avg_price).round(0)
+        st.dataframe(by_tool.sort_values("סה\"כ ליטרים", ascending=False),
+                     use_container_width=True, hide_index=True)
+
+        with st.expander("פירוט תדלוקים"):
+            cols = [c for c in ["date", "tool_name", "license_num", "liters",
+                                "engine_hours", "lph_calculated"]
+                    if c in solar.columns]
+            st.dataframe(solar[cols].sort_values("date"),
+                         use_container_width=True, hide_index=True)
+
+    # ── תדלוקים ללא שעות עבודה (חשד) ──
+    sec("תדלוקים ללא שעות עבודה (חשד לבזבוז)")
+    from core import solar_loader, hours_loader
+    from pipeline import _load_tools_registry
+    if not solar.empty:
+        sm = solar_loader.aggregate_by_tool_month(solar)
+        hm = hours_loader.aggregate_by_tool_month(hours) if not hours.empty else pd.DataFrame(
+            columns=["license_num", "month", "total_work_hours"]
+        )
+        no_hrs = anomaly_detector.detect_solar_without_hours(sm, hm, _load_tools_registry())
+        if no_hrs.empty:
+            ins("green", "✓", "כל הכלים שתודלקו אכן עבדו", "אין תדלוקים יתומים.")
+        else:
+            disp = no_hrs.copy()
+            disp["estimated_waste_nis"] = disp["estimated_waste_nis"].round(0)
+            disp.columns = ["מס' רישוי", "שם כלי", "סוג כלי", "חודש",
+                            "סה\"כ ליטרים", "בזבוז משוער (₪)"]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── אחזקות ──
+    sec("אחזקות - מוסך, תיקונים, חלפים")
     maint = _filter_by_keywords(df, KEYWORD_CATEGORIES["maintenance"])
+    if "source" in maint.columns:
+        maint = maint[maint["source"] == "chashbashevet"]
     if "amount" in maint.columns:
         maint = maint[maint["amount"] > 0]
     if maint.empty:
@@ -309,9 +507,17 @@ def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
     else:
         total_m = float(maint["amount"].sum())
         st.metric("סה\"כ אחזקה", _fmt_money(total_m))
-        cols = [c for c in ["date", "month", "account_name", "supplier", "description", "amount"]
-                if c in maint.columns]
-        st.dataframe(maint[cols], use_container_width=True, hide_index=True)
+        by_supm = maint.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
+        by_supm.columns = ["ספק / מוסך", "סה\"כ (₪)", "תנועות"]
+        by_supm["סה\"כ (₪)"] = by_supm["סה\"כ (₪)"].round(0)
+        st.dataframe(by_supm.sort_values("סה\"כ (₪)", ascending=False),
+                     use_container_width=True, hide_index=True)
+
+        with st.expander("פירוט תנועות אחזקה"):
+            cols = [c for c in ["date", "month", "account_name", "supplier",
+                                "description", "amount"] if c in maint.columns]
+            st.dataframe(maint[cols].sort_values("date" if "date" in cols else cols[0]),
+                         use_container_width=True, hide_index=True)
 
 
 # ─── Tab 7: רכבים וכלים ─────────────────────────────────────
