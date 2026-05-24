@@ -1,6 +1,9 @@
-# Project data - do NOT push customer data to git
+# Raw customer data - kept local even in private repo
 data/projects/*/
-data/master.parquet
+
+# master.parquet (processed) is pushed so Streamlit Cloud renders the data.
+# Repo MUST stay private — contains financial data.
+# data/master.parquet  ← intentionally tracked
 
 # Outputs
 output/
