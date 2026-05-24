@@ -139,6 +139,66 @@ def supplier_month_matrix(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
     return pivot.sort_values("סה\"כ", ascending=False)
 
 
+def project_summary(df: pd.DataFrame, project_id: str) -> dict:
+    """מחזיר סיכום KPI לפרויקט בודד.
+
+    שותף בין כרטיס בדף הראשי לטאב הסקירה בדף הפרויקט.
+
+    Returns:
+        dict עם: revenue, expenses, profit, profit_pct, num_transactions,
+        num_suppliers, num_tools, num_anomalies, has_data, months, first_date, last_date.
+    """
+    summary = {
+        "revenue": 0.0,
+        "expenses": 0.0,
+        "profit": 0.0,
+        "profit_pct": 0.0,
+        "num_transactions": 0,
+        "num_suppliers": 0,
+        "num_tools": 0,
+        "num_anomalies": 0,
+        "has_data": False,
+        "months": [],
+        "first_date": None,
+        "last_date": None,
+    }
+    if df.empty or "project_id" not in df.columns:
+        return summary
+
+    data = df[df["project_id"] == project_id]
+    if data.empty:
+        return summary
+
+    summary["has_data"] = True
+    summary["num_transactions"] = int(len(data))
+
+    if "amount" in data.columns:
+        summary["revenue"] = float(-data.loc[data["amount"] < 0, "amount"].sum())
+        summary["expenses"] = float(data.loc[data["amount"] > 0, "amount"].sum())
+        summary["profit"] = summary["revenue"] - summary["expenses"]
+        if summary["revenue"] > 0:
+            summary["profit_pct"] = (summary["profit"] / summary["revenue"]) * 100
+
+    if "supplier" in data.columns:
+        summary["num_suppliers"] = int(data["supplier"].dropna().replace("", pd.NA).dropna().nunique())
+    if "license_num" in data.columns:
+        summary["num_tools"] = int(data["license_num"].dropna().nunique())
+    if "anomaly_flags" in data.columns:
+        summary["num_anomalies"] = int(
+            data["anomaly_flags"].astype(str).str.len().gt(2).sum()
+        )
+    if "month" in data.columns:
+        months = sorted(data["month"].dropna().unique().tolist())
+        summary["months"] = months
+    if "date" in data.columns:
+        dates = pd.to_datetime(data["date"], errors="coerce").dropna()
+        if not dates.empty:
+            summary["first_date"] = dates.min()
+            summary["last_date"] = dates.max()
+
+    return summary
+
+
 def category_month_matrix(df: pd.DataFrame, project_id: str | None = None) -> pd.DataFrame:
     """מטריצת קטגוריה × חודש (pivot)."""
     if df.empty:
