@@ -1,0 +1,28 @@
+# Project data - do NOT push customer data to git
+data/projects/*/
+data/master.parquet
+
+# Outputs
+output/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+
+# Env
+.env
+.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Streamlit local secrets
+.streamlit/secrets.toml
