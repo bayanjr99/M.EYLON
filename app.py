@@ -58,8 +58,11 @@ st.set_page_config(
 )
 
 # ═══ Loading veil + main CSS ═══════════════════════════════
-st.markdown(LOADING_VEIL, unsafe_allow_html=True)
-st.markdown(MAIN_CSS, unsafe_allow_html=True)
+# Use st.html() instead of st.markdown(unsafe_allow_html=True): MarkdownIt
+# breaks on large <style> blocks (27KB+) and dumps the CSS as visible text.
+# st.html bypasses the markdown parser entirely.
+st.html(LOADING_VEIL)
+st.html(MAIN_CSS)
 
 
 # ═══ DATA LOAD ══════════════════════════════════════════════
