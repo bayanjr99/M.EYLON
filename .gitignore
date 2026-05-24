@@ -13,6 +13,14 @@ data/audit.sqlite3-journal
 data/audit.sqlite3-wal
 data/audit.sqlite3-shm
 
+# project_control.sqlite — user-entered field data.
+# INTENTIONALLY TRACKED: needs to sync to Streamlit Cloud so the dashboard
+# shows manual entries. Side journals stay local.
+# data/project_control.sqlite  ← intentionally tracked
+data/project_control.sqlite-journal
+data/project_control.sqlite-wal
+data/project_control.sqlite-shm
+
 # Outputs
 output/
 logs/

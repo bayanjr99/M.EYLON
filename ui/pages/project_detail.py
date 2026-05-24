@@ -146,6 +146,7 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         "🚜 רכבים וכלים",
         "📋 פירוט תנועות",
         "🔍 בדיקות וחריגות",
+        "✍️ עדכון נתוני שטח",
     ])
 
     with tabs[0]:
@@ -155,17 +156,20 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     with tabs[2]:
         _tab_expenses(df)
     with tabs[3]:
-        _tab_employees(df)
+        _tab_employees(df, project_meta)
     with tabs[4]:
-        _tab_suppliers(df)
+        _tab_suppliers(df, project_meta)
     with tabs[5]:
-        _tab_fuel_maintenance(df)
+        _tab_fuel_maintenance(df, project_meta)
     with tabs[6]:
-        _tab_vehicles_tools(df)
+        _tab_vehicles_tools(df, project_meta)
     with tabs[7]:
         _tab_transactions(df)
     with tabs[8]:
         _tab_qa(df, project_meta)
+    with tabs[9]:
+        from ui.pages.field_data_entry import render_field_data_entry
+        render_field_data_entry(project_meta)
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
@@ -363,7 +367,7 @@ def _tab_expenses(df: pd.DataFrame) -> None:
 
 
 # ─── Tab 4: עובדים ושכר (עם site_tracking) ──────────────────
-def _tab_employees(df: pd.DataFrame) -> None:
+def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     from pipeline import load_site_tracking_data
     project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
 
@@ -418,9 +422,25 @@ def _tab_employees(df: pd.DataFrame) -> None:
             disp.columns = [heb.get(c, c) for c in cols]
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
+    # ── הזנות ידניות מ-SQLite ──
+    if project_meta:
+        sec("הזנות ידניות (control_db)", meta="מטאב 'עדכון נתוני שטח'")
+        from core import control_db
+        manual = control_db.list_rows("employee_work_logs", project_meta["project_id"])
+        if manual.empty:
+            st.caption("אין הזנות ידניות. עבור לטאב 'עדכון נתוני שטח' כדי להוסיף.")
+        else:
+            agg = manual.groupby("employee_name").agg(
+                ימי=("date", "nunique"),
+                שעות=("hours", "sum"),
+                ימים=("days", "sum"),
+            ).reset_index().round(1)
+            agg.columns = ["שם עובד", "ימי עבודה", "סה\"כ שעות", "סה\"כ ימים"]
+            st.dataframe(agg, use_container_width=True, hide_index=True)
+
 
 # ─── Tab 5: ספקים וקבלנים (עם site_tracking) ────────────────
-def _tab_suppliers(df: pd.DataFrame) -> None:
+def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     from pipeline import load_site_tracking_data
     project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
 
@@ -467,9 +487,27 @@ def _tab_suppliers(df: pd.DataFrame) -> None:
             disp.columns = [heb.get(c, c) for c in cols]
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
+    # ── הזנות ידניות מ-SQLite ──
+    if project_meta:
+        sec("הזנות ידניות (control_db)")
+        from core import control_db
+        manual = control_db.list_rows("contractor_work_logs", project_meta["project_id"])
+        if manual.empty:
+            st.caption("אין הזנות ידניות. עבור לטאב 'עדכון נתוני שטח'.")
+        else:
+            cols = [c for c in ["date", "contractor_name", "work_type", "quantity",
+                                "hours", "days", "price", "invoice_num", "notes"]
+                    if c in manual.columns]
+            heb = {"date": "תאריך", "contractor_name": "שם קבלן", "work_type": "סוג עבודה",
+                   "quantity": "כמות", "hours": "שעות", "days": "ימים",
+                   "price": "מחיר (₪)", "invoice_num": "מס' חשבונית", "notes": "הערות"}
+            disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
+            disp.columns = [heb.get(c, c) for c in cols]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
 
 # ─── Tab 6: סולר ואחזקה (מודול מלא) ─────────────────────────
-def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
+def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
     hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
     # קניות סולר מחשבשבת (מילות מפתח: סולר/דלק)
@@ -652,9 +690,31 @@ def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
             st.dataframe(maint[cols].sort_values("date" if "date" in cols else cols[0]),
                          use_container_width=True, hide_index=True)
 
+    # ── הזנות ידניות: יומן סולר + אחזקה ──
+    if project_meta:
+        from core import control_db
+        sec("יומן סולר ידני")
+        fl = control_db.list_rows("fuel_logs", project_meta["project_id"])
+        if fl.empty:
+            st.caption("אין הזנות ידניות של תדלוקים.")
+        else:
+            cols = [c for c in ["date", "tool_name", "license_num", "driver", "supplier",
+                                "invoice_num", "liters", "price_per_liter", "total_cost",
+                                "notes"] if c in fl.columns]
+            heb = {"date": "תאריך", "tool_name": "כלי", "license_num": "רישוי",
+                   "driver": "נהג", "supplier": "ספק", "invoice_num": "חשבונית",
+                   "liters": "ל'", "price_per_liter": "₪/ל'", "total_cost": "סה\"כ ₪",
+                   "notes": "הערות"}
+            disp = fl[cols].sort_values("date" if "date" in cols else cols[0])
+            disp.columns = [heb.get(c, c) for c in cols]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+            t_l = float(fl["liters"].sum()) if "liters" in fl.columns else 0
+            t_c = float(fl["total_cost"].sum()) if "total_cost" in fl.columns else 0
+            st.caption(f"סה\"כ ידני: {t_l:,.0f} ל' / ₪{t_c:,.0f}")
+
 
 # ─── Tab 7: רכבים וכלים (מאוחד) ─────────────────────────────
-def _tab_vehicles_tools(df: pd.DataFrame) -> None:
+def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     """תצוגה מאוחדת לכל כלי: רישוי, סוג, שעות, סולר, עלות משוערת, ניצול."""
     from pipeline import _load_tools_registry
 
@@ -819,6 +879,43 @@ def _tab_vehicles_tools(df: pd.DataFrame) -> None:
                    "engine_oil_2_l": "שמן מנוע 2 (ל')"}
             per_tool.columns = [heb.get(c, c) for c in per_tool.columns]
             st.dataframe(per_tool, use_container_width=True, hide_index=True)
+
+    # ── הזנות ידניות: שעות כלים + טיפולים ──
+    if project_meta:
+        from core import control_db
+        pid = project_meta["project_id"]
+
+        sec("שעות כלים ידני")
+        eq = control_db.list_rows("equipment_work_logs", pid)
+        if eq.empty:
+            st.caption("אין הזנות ידניות של שעות עבודה לכלים.")
+        else:
+            cols = [c for c in ["date", "tool_name", "license_num", "operator",
+                                "work_hours", "engine_hours", "notes"] if c in eq.columns]
+            heb = {"date": "תאריך", "tool_name": "כלי", "license_num": "רישוי",
+                   "operator": "מפעיל", "work_hours": "ש\"ע", "engine_hours": "ש\"מ",
+                   "notes": "הערות"}
+            disp = eq[cols].sort_values("date" if "date" in cols else cols[0])
+            disp.columns = [heb.get(c, c) for c in cols]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        sec("טיפולים ידני")
+        ml = control_db.list_rows("maintenance_logs", pid)
+        if ml.empty:
+            st.caption("אין הזנות ידניות של טיפולים.")
+        else:
+            cols = [c for c in ["date", "tool_name", "license_num", "treatment_type",
+                                "garage_supplier", "cost", "engine_hours",
+                                "next_service_hours", "invoice_num", "notes"]
+                    if c in ml.columns]
+            heb = {"date": "תאריך", "tool_name": "כלי", "license_num": "רישוי",
+                   "treatment_type": "סוג טיפול", "garage_supplier": "מוסך/ספק",
+                   "cost": "עלות (₪)", "engine_hours": "ש\"מ",
+                   "next_service_hours": "טיפול הבא", "invoice_num": "חשבונית",
+                   "notes": "הערות"}
+            disp = ml[cols].sort_values("date" if "date" in cols else cols[0])
+            disp.columns = [heb.get(c, c) for c in cols]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── הסבר על מה שחסר ──
     with st.expander("💡 מה שעוד דורש קלט חיצוני"):
