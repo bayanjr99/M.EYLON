@@ -113,7 +113,6 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         "⛽ סולר ואחזקה",
         "🚜 רכבים וכלים",
         "📋 פירוט תנועות",
-        "🤖 AI / חריגות",
     ])
 
     with tabs[0]:
@@ -132,8 +131,6 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         _tab_vehicles_tools(df)
     with tabs[7]:
         _tab_transactions(df)
-    with tabs[8]:
-        _tab_ai_anomalies(df, project_id)
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
@@ -574,41 +571,6 @@ def _tab_transactions(df: pd.DataFrame) -> None:
         st.caption(f"{len(disp):,} תנועות תואמות")
 
     st.dataframe(disp, use_container_width=True, hide_index=True)
-
-
-# ─── Tab 9: AI / חריגות ─────────────────────────────────────
-def _tab_ai_anomalies(df: pd.DataFrame, project_id: str) -> None:
-    sec("חריגות שהמערכת זיהתה")
-    from core import solar_loader, hours_loader
-    from pipeline import _load_tools_registry
-
-    sr = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
-    hr = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
-    cr = df[df["source"] == "chashbashevet"] if "source" in df.columns else df
-    sm = solar_loader.aggregate_by_tool_month(sr) if not sr.empty else pd.DataFrame()
-    hm = hours_loader.aggregate_by_tool_month(hr) if not hr.empty else pd.DataFrame()
-
-    anom = anomaly_detector.run_all_checks(cr, sm, hm, _load_tools_registry(), hr)
-    if anom.empty:
-        ins("green", "✓", "אין חריגות פעילות", "כל הבדיקות עברו בהצלחה.")
-    else:
-        disp = anom.copy()
-        disp["estimated_impact_nis"] = disp["estimated_impact_nis"].round(0)
-        disp.columns = ["פרויקט", "חודש", "סוג בדיקה", "חומרה",
-                        "מזהה", "פרטים", "השפעה (₪)"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-    sec("שאל את ה-AI על הפרויקט")
-    import os
-    q = st.text_area("השאלה שלך", placeholder="לדוגמה: מה הקטגוריה הכי בעייתית?",
-                     key=f"ai_q_{project_id}", height=80)
-    if st.button("שלח", key=f"ai_send_{project_id}", type="primary", disabled=not q.strip()):
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            st.error("חסר ANTHROPIC_API_KEY ב-.env / secrets.")
-        else:
-            from core import ai_insights
-            with st.spinner("Claude חושב…"):
-                st.markdown(ai_insights.ask_with_context(df, q.strip(), project_id=project_id))
 
 
 # ─── תרגום תוויות קטגוריה ─────────────────────────────────
