@@ -467,10 +467,18 @@ def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
                      use_container_width=True, hide_index=True)
 
         with st.expander("פירוט חשבוניות סולר"):
-            cols = [c for c in ["date", "supplier", "description", "amount", "month"]
-                    if c in fuel_purchases.columns]
-            st.dataframe(fuel_purchases[cols].sort_values("date" if "date" in cols else cols[0]),
-                         use_container_width=True, hide_index=True)
+            fp = fuel_purchases.copy()
+            if "description" in fp.columns:
+                fp["invoice_num"] = fp["description"].apply(_extract_invoice_num)
+            cols = [c for c in ["date", "supplier", "invoice_num", "description",
+                                "amount", "month"] if c in fp.columns]
+            disp = fp[cols].copy().sort_values("date" if "date" in cols else cols[0])
+            heb = {"date": "תאריך", "supplier": "ספק", "invoice_num": "מס' חשבונית",
+                   "description": "פרטים", "amount": "סכום (₪)", "month": "חודש"}
+            disp.columns = [heb.get(c, c) for c in cols]
+            if "סכום (₪)" in disp.columns:
+                disp["סכום (₪)"] = disp["סכום (₪)"].round(0)
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── צריכה לפי רכב/כלי ──
     sec("צריכה לפי כלי", meta="מתוך solar.xlsx")
@@ -515,6 +523,17 @@ def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
                             "סה\"כ ליטרים", "בזבוז משוער (₪)"]
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
+    # ── מה דורש קלט חיצוני ──
+    with st.expander("💡 מה דורש קלט חיצוני להשלמת המודול"):
+        st.markdown("""
+        - **מלאי פתיחה/סגירה**: דורש `fuel_inventory.xlsx` ידני
+          עם עמודות `month, opening_l, closing_l`.
+        - **שיוך נהג/מפעיל לתדלוק**: לא קיים בקובץ solar.xlsx של Pointer.
+          ניתן להוסיף עמודה `driver` אם המערכת התפעולית שלך תומכת.
+        - **שיוך ק"מ (לרכבים)**: כרגע יש רק `engine_hours` (לכלי צמ"ה).
+          אם המזכירה מתעדת ק"מ לרכבים - להוסיף עמודה `kilometers`.
+        """)
+
     # ── אחזקות ──
     sec("אחזקות - מוסך, תיקונים, חלפים")
     maint = _filter_by_keywords(df, KEYWORD_CATEGORIES["maintenance"])
@@ -540,27 +559,116 @@ def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
                          use_container_width=True, hide_index=True)
 
 
-# ─── Tab 7: רכבים וכלים ─────────────────────────────────────
+# ─── Tab 7: רכבים וכלים (מאוחד) ─────────────────────────────
 def _tab_vehicles_tools(df: pd.DataFrame) -> None:
-    sec("שעות עבודה לפי כלי")
-    hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
-    if hours.empty:
-        ins("blue", "ℹ️", "אין נתוני שעות", "טען <code>hours.xlsx</code> לחודש.")
-    else:
-        by_tool = hours.groupby(["license_num", "tool_name"])["work_hours"].sum().reset_index()
-        by_tool.columns = ["מספר רישוי", "שם כלי", "סה\"כ שעות"]
-        by_tool["סה\"כ שעות"] = by_tool["סה\"כ שעות"].round(1)
-        st.dataframe(by_tool.sort_values("סה\"כ שעות", ascending=False),
-                     use_container_width=True, hide_index=True)
+    """תצוגה מאוחדת לכל כלי: רישוי, סוג, שעות, סולר, עלות משוערת, ניצול."""
+    from pipeline import _load_tools_registry
 
-    sec("ליטר/שעה ותקנים")
+    hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
+    chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
+    tools_reg = _load_tools_registry()
+
+    # חישוב מחיר ממוצע לליטר מתוך חשבשבת (לעלות סולר משוערת לכלי)
+    fuel_chash = _filter_by_keywords(chash, KEYWORD_CATEGORIES["fuel"])
+    if "amount" in fuel_chash.columns:
+        fuel_chash = fuel_chash[fuel_chash["amount"] > 0]
+    total_fuel_cost = float(fuel_chash["amount"].sum()) if not fuel_chash.empty else 0.0
+    total_liters_all = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0.0
+    avg_lp = total_fuel_cost / total_liters_all if total_liters_all > 0 else 0.0
+
+    if hours.empty and solar.empty:
+        ins("blue", "ℹ️", "אין נתוני כלים",
+            "טען <code>hours.xlsx</code> ו/או <code>solar.xlsx</code> לחודש.")
+        return
+
+    # ── אגרגציה מאוחדת לכל כלי ──
+    # שעות לפי license_num
+    if not hours.empty:
+        by_h = hours.groupby("license_num").agg(
+            tool_name=("tool_name", lambda s: s.dropna().iloc[0] if s.notna().any() else ""),
+            total_hours=("work_hours", "sum"),
+            work_days=("date", "nunique"),
+        ).reset_index()
+    else:
+        by_h = pd.DataFrame(columns=["license_num", "tool_name", "total_hours", "work_days"])
+
+    # סולר לפי license_num
+    if not solar.empty:
+        by_s = solar.groupby("license_num").agg(
+            tool_name_s=("tool_name", lambda s: s.dropna().iloc[0] if s.notna().any() else ""),
+            total_liters=("liters", "sum"),
+            fueling_count=("liters", "size"),
+        ).reset_index()
+    else:
+        by_s = pd.DataFrame(columns=["license_num", "tool_name_s", "total_liters", "fueling_count"])
+
+    # מיזוג שני המקורות
+    merged = by_h.merge(by_s, on="license_num", how="outer")
+    merged["tool_name"] = merged["tool_name"].fillna("").replace("", pd.NA)
+    merged["tool_name"] = merged["tool_name"].fillna(merged.get("tool_name_s", ""))
+    merged = merged.drop(columns=[c for c in ["tool_name_s"] if c in merged.columns])
+    for col in ("total_hours", "total_liters", "fueling_count", "work_days"):
+        if col in merged.columns:
+            merged[col] = merged[col].fillna(0)
+
+    # הוסף נתוני tools_registry (סוג כלי + תקן עליון)
+    if not tools_reg.empty:
+        reg_cols = ["license_num", "tool_type", "norm_high"]
+        reg_cols = [c for c in reg_cols if c in tools_reg.columns]
+        merged = merged.merge(tools_reg[reg_cols], on="license_num", how="left")
+    if "tool_type" not in merged.columns:
+        merged["tool_type"] = "—"
+
+    # חישובים נגזרים
+    merged["lph_actual"] = merged.apply(
+        lambda r: round(r["total_liters"] / r["total_hours"], 1)
+        if r["total_hours"] > 0 else 0, axis=1)
+    merged["fuel_cost_est"] = (merged["total_liters"] * avg_lp).round(0) if avg_lp > 0 else 0
+    merged["over_norm"] = merged.apply(
+        lambda r: "⚠️" if r.get("norm_high") and r["lph_actual"] > r["norm_high"] * 1.15
+        else ("✓" if r["total_hours"] > 0 else "—"),
+        axis=1
+    )
+
+    # ── תצוגה מאוחדת ──
+    sec("כל הכלים בפרויקט")
+    n_tools = int(merged["license_num"].nunique())
+    total_h = float(merged["total_hours"].sum())
+    total_l = float(merged["total_liters"].sum())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("כלים פעילים", str(n_tools))
+    c2.metric("סה\"כ שעות", f"{total_h:,.0f}")
+    c3.metric("סה\"כ ליטרים", f"{total_l:,.0f}")
+    c4.metric("עלות סולר משוערת", _fmt_money(float(merged["fuel_cost_est"].sum())))
+
+    show_cols = ["license_num", "tool_name", "tool_type", "total_hours",
+                 "work_days", "total_liters", "fueling_count",
+                 "lph_actual", "norm_high", "fuel_cost_est", "over_norm"]
+    show_cols = [c for c in show_cols if c in merged.columns]
+    disp = merged[show_cols].copy()
+    disp["total_hours"] = disp["total_hours"].round(1)
+    if "total_liters" in disp.columns:
+        disp["total_liters"] = disp["total_liters"].round(0)
+    heb = {
+        "license_num": "מס' רישוי", "tool_name": "שם כלי", "tool_type": "סוג",
+        "total_hours": "שעות", "work_days": "ימי עבודה",
+        "total_liters": "ליטרים", "fueling_count": "תדלוקים",
+        "lph_actual": "ל'/ש'", "norm_high": "תקן", "fuel_cost_est": "עלות סולר משוערת (₪)",
+        "over_norm": "מצב",
+    }
+    disp.columns = [heb.get(c, c) for c in show_cols]
+    st.dataframe(disp.sort_values("עלות סולר משוערת (₪)" if "עלות סולר משוערת (₪)" in disp.columns else disp.columns[0],
+                                  ascending=False),
+                 use_container_width=True, hide_index=True)
+
+    # ── חריגות סולר ──
+    sec("חריגות צריכת סולר", meta="ל'/ש' מעל תקן × 1.15")
     if not solar.empty and not hours.empty:
         from core import solar_loader, hours_loader
         sm = solar_loader.aggregate_by_tool_month(solar)
         hm = hours_loader.aggregate_by_tool_month(hours)
-        from pipeline import _load_tools_registry
-        excess = anomaly_detector.detect_solar_excess(sm, hm, _load_tools_registry())
+        excess = anomaly_detector.detect_solar_excess(sm, hm, tools_reg)
         if excess.empty:
             ins("green", "✓", "כל הכלים בתקן", "אין חריגות צריכת סולר.")
         else:
@@ -571,6 +679,18 @@ def _tab_vehicles_tools(df: pd.DataFrame) -> None:
                             "סה\"כ שעות", "ל'/ש' בפועל", "תקן עליון",
                             "חריגה (ל')", "נזק (₪)", "חומרה"]
             st.dataframe(disp, use_container_width=True, hide_index=True)
+    else:
+        st.caption("נדרשים גם solar.xlsx וגם hours.xlsx לזיהוי חריגות סולר.")
+
+    # ── הסבר על מה שחסר ──
+    with st.expander("💡 מה שעוד דורש קלט חיצוני"):
+        st.markdown("""
+        - **תיקונים פר-כלי**: חשבשבת מציג אחזקה ברמת הפרויקט, לא פר רכב.
+          לדיוק מלא נדרש שדה `license_num` בכל חשבונית תיקון.
+        - **שיוך נהג/מפעיל**: לא קיים ב-`solar.xlsx` של Pointer/דלקן.
+          ניתן להוסיף מ-`hours.xlsx` אם המזכירה מתעדת שם עובד.
+        - **ניצול**: דורש "שעות זמינות" לכל כלי בחודש (לפי תקן 8 שעות × ימי עבודה).
+        """)
 
 
 # ─── Tab 8: פירוט תנועות ────────────────────────────────────

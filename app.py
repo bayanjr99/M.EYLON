@@ -31,6 +31,7 @@ logger.info("=== dashboard script started ===")
 # ── Imports פנימיים ────────────────────────────────────────
 import pipeline
 from ui.components import render_top_bar
+from ui.pages.import_data import render_import_page
 from ui.pages.project_detail import render_project_detail
 from ui.pages.projects_list import render_projects_list
 from ui.styles import LOADING_VEIL, MAIN_CSS
@@ -108,8 +109,12 @@ render_top_bar(
 
 # ═══ ROUTER ═════════════════════════════════════════════════
 selected_project_id = st.session_state.get("selected_project_id")
+current_view = st.session_state.get("view")
 
-if selected_project_id:
+if current_view == "import":
+    # מסך ייבוא נתונים
+    render_import_page(projects)
+elif selected_project_id:
     # מסך פרויקט בודד
     project_meta = next(
         (p for p in projects if p.get("project_id") == selected_project_id),
@@ -123,7 +128,13 @@ if selected_project_id:
     else:
         render_project_detail(df_master, project_meta)
 else:
-    # מסך נחיתה — רשימת פרויקטים
+    # מסך נחיתה — רשימת פרויקטים + כפתור ייבוא
+    nav_col, _ = st.columns([1, 5])
+    with nav_col:
+        if st.button("📁 ייבוא נתונים", key="open_import",
+                     use_container_width=True, type="primary"):
+            st.session_state["view"] = "import"
+            st.rerun()
     render_projects_list(df_master, projects)
 
 
