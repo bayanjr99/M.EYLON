@@ -131,6 +131,23 @@ CREATE TABLE IF NOT EXISTS maintenance_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_maint_proj_month ON maintenance_logs(project_id, month);
 CREATE INDEX IF NOT EXISTS idx_maint_license    ON maintenance_logs(license_num);
+
+-- Fleet-wide tools registry (NOT per-project — same fleet works across sites).
+-- Mirrors data/tools_registry.xlsx but mutable from the UI.
+CREATE TABLE IF NOT EXISTS tools_registry (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    license_num   INTEGER UNIQUE NOT NULL,
+    tool_name     TEXT NOT NULL,
+    tool_type     TEXT,
+    owner         TEXT,
+    norm_low      REAL,
+    norm_high     REAL,
+    notes         TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    source        TEXT DEFAULT 'manual_entry'
+);
+CREATE INDEX IF NOT EXISTS idx_tools_license ON tools_registry(license_num);
 """
 
 # מטא-נתונים לטבלאות (סדר עמודות לתצוגה + עמודות עברית)
@@ -377,6 +394,96 @@ def delete_row(table: str, row_id: int, project_id: str) -> bool:
         cur = conn.execute(f"DELETE FROM {table} WHERE id = ? AND project_id = ?",
                            [row_id, project_id])
         return cur.rowcount > 0
+
+
+# ── Tools registry CRUD (fleet-wide, no project_id) ────────────
+def list_tools() -> pd.DataFrame:
+    """כל הכלים מ-SQLite. ממוין לפי license_num."""
+    init()
+    with _connect() as conn:
+        return pd.read_sql(
+            "SELECT * FROM tools_registry ORDER BY license_num",
+            conn,
+        )
+
+
+def add_tool(license_num: int, tool_name: str, tool_type: str = "",
+             owner: str = "", norm_low: float | None = None,
+             norm_high: float | None = None, notes: str = "") -> tuple[bool, str]:
+    """מוסיף כלי חדש. מחזיר (success, message)."""
+    if not license_num:
+        return False, "מספר רישוי חובה"
+    if not tool_name or not tool_name.strip():
+        return False, "שם כלי חובה"
+    init()
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        with _connect() as conn:
+            conn.execute(
+                """INSERT INTO tools_registry
+                   (license_num, tool_name, tool_type, owner, norm_low, norm_high,
+                    notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (int(license_num), tool_name.strip(), tool_type.strip() or None,
+                 owner.strip() or None, norm_low, norm_high,
+                 notes.strip() or None, now, now),
+            )
+        return True, f"הכלי {license_num} נוסף"
+    except sqlite3.IntegrityError:
+        return False, f"מספר רישוי {license_num} כבר קיים"
+
+
+def delete_tool_by_license(license_num: int) -> bool:
+    """מחיקת כלי לפי license_num."""
+    init()
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM tools_registry WHERE license_num = ?", [int(license_num)]
+        )
+        return cur.rowcount > 0
+
+
+def update_tool(license_num: int, **fields) -> bool:
+    """עדכון שדות בכלי. השדות המותרים: tool_name, tool_type, owner, norm_low, norm_high, notes."""
+    allowed = {"tool_name", "tool_type", "owner", "norm_low", "norm_high", "notes"}
+    fields = {k: v for k, v in fields.items() if k in allowed}
+    if not fields:
+        return False
+    init()
+    now = datetime.now().isoformat(timespec="seconds")
+    set_clause = ", ".join(f"{k} = ?" for k in fields) + ", updated_at = ?"
+    params = list(fields.values()) + [now, int(license_num)]
+    with _connect() as conn:
+        cur = conn.execute(
+            f"UPDATE tools_registry SET {set_clause} WHERE license_num = ?", params
+        )
+        return cur.rowcount > 0
+
+
+def merged_tools_registry(xlsx_path: str | Path | None = None) -> pd.DataFrame:
+    """ממזג tools_registry.xlsx + SQLite tools_registry.
+
+    SQLite גובר על xlsx במקרה של חפיפה (license_num זהה).
+    שימושי ל-pipeline._load_tools_registry().
+    """
+    sqlite_tools = list_tools()
+    xlsx_tools = pd.DataFrame()
+    if xlsx_path:
+        try:
+            xlsx_tools = pd.read_excel(xlsx_path, engine="openpyxl")
+            xlsx_tools["license_num"] = pd.to_numeric(
+                xlsx_tools["license_num"], errors="coerce"
+            ).astype("Int64")
+        except Exception as e:
+            logger.warning("Failed to load tools xlsx: %s", e)
+    if xlsx_tools.empty:
+        return sqlite_tools
+    if sqlite_tools.empty:
+        return xlsx_tools
+    # SQLite overrides xlsx for matching license_num
+    sqlite_lics = set(sqlite_tools["license_num"].dropna().astype(int).tolist())
+    xlsx_only = xlsx_tools[~xlsx_tools["license_num"].isin(sqlite_lics)]
+    return pd.concat([xlsx_only, sqlite_tools], ignore_index=True, sort=False)
 
 
 def count_rows(project_id: str) -> dict[str, int]:

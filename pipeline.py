@@ -357,17 +357,28 @@ def aggregate_month(
 
 
 def _load_tools_registry() -> pd.DataFrame:
-    """טוען את tools_registry.xlsx (לכלים + תקני סולר)."""
-    if not TOOLS_REGISTRY.exists():
-        logger.warning("tools_registry.xlsx not found")
-        return pd.DataFrame(columns=["license_num", "tool_name", "tool_type", "norm_low", "norm_high"])
+    """טוען את tools_registry.
+
+    ממזג tools_registry.xlsx (seed) עם control_db.tools_registry (mutable).
+    SQLite גובר על xlsx במקרה של חפיפה.
+    """
     try:
-        df = pd.read_excel(TOOLS_REGISTRY)
-        df["license_num"] = pd.to_numeric(df["license_num"], errors="coerce").astype("Int64")
-        return df
+        from core import control_db
+        merged = control_db.merged_tools_registry(TOOLS_REGISTRY if TOOLS_REGISTRY.exists() else None)
+        if "license_num" in merged.columns:
+            merged["license_num"] = pd.to_numeric(merged["license_num"], errors="coerce").astype("Int64")
+        return merged
     except Exception as e:
-        logger.exception("Failed to load tools_registry: %s", e)
-        return pd.DataFrame()
+        logger.exception("Failed to load merged tools_registry: %s", e)
+        # Fallback to xlsx-only
+        if TOOLS_REGISTRY.exists():
+            try:
+                df = pd.read_excel(TOOLS_REGISTRY)
+                df["license_num"] = pd.to_numeric(df["license_num"], errors="coerce").astype("Int64")
+                return df
+            except Exception:
+                pass
+        return pd.DataFrame(columns=["license_num", "tool_name", "tool_type", "norm_low", "norm_high"])
 
 
 def detect_anomalies(df_month: pd.DataFrame, tools_registry: pd.DataFrame | None = None) -> pd.DataFrame:

@@ -138,17 +138,190 @@ def render_field_data_entry(project_meta: dict) -> None:
             st.warning(f"מספר רישוי לא תקין: {license_str}")
             license_filter = None
 
-    # ── 5 תתי-טאבים ──
+    # ── 6 תתי-טאבים (5 יומנים + ניהול כלים) ──
+    tools_count = len(control_db.list_tools())
     tab_labels = [
         f"⛽ {control_db.TABLES['fuel_logs']['label']} ({counts['fuel_logs']})",
         f"🚜 {control_db.TABLES['equipment_work_logs']['label']} ({counts['equipment_work_logs']})",
         f"👷 {control_db.TABLES['employee_work_logs']['label']} ({counts['employee_work_logs']})",
         f"🏢 {control_db.TABLES['contractor_work_logs']['label']} ({counts['contractor_work_logs']})",
         f"🔧 {control_db.TABLES['maintenance_logs']['label']} ({counts['maintenance_logs']})",
+        f"🔩 ניהול כלים ({tools_count})",
     ]
     sub_tabs = st.tabs(tab_labels)
     tables_in_order = ["fuel_logs", "equipment_work_logs", "employee_work_logs",
                         "contractor_work_logs", "maintenance_logs"]
-    for sub_tab, table in zip(sub_tabs, tables_in_order):
+    # First 5: standard data_editor sub-tabs
+    for sub_tab, table in zip(sub_tabs[:5], tables_in_order):
         with sub_tab:
+            # Special: fuel_logs gets a quick-add form at top
+            if table == "fuel_logs":
+                _render_fuel_quick_form(project_id)
+                st.markdown("---")
             _render_sub_tab(table, project_id, month_filter, license_filter)
+
+    # 6th: tools management
+    with sub_tabs[5]:
+        _render_tools_management()
+
+
+# ── Tools management sub-tab ─────────────────────────────────
+def _render_tools_management() -> None:
+    """ניהול רשימת כלים: הוספה / מחיקה / עדכון. Fleet-wide."""
+    ins("blue", "🔩", "ניהול רשימת כלים",
+        "כלים שמוזנים כאן זמינים לכל הפרויקטים. הם ממוזגים עם "
+        "<code>data/tools_registry.xlsx</code> הקיים (SQLite גובר).")
+
+    # ── טופס הוספה ──
+    sec("הוסף כלי חדש")
+    with st.form("add_tool_form", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            new_lic = st.number_input("מספר רישוי *", min_value=1, step=1, value=None,
+                                       placeholder="לדוגמה: 168792")
+        with c2:
+            new_name = st.text_input("שם / דגם *", placeholder="לדוגמה: שופל קטרפילר 966M")
+        with c3:
+            new_type = st.text_input("סוג כלי", placeholder="לדוגמה: שופל גדול")
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            new_owner = st.text_input("בעלים", placeholder="בעלים אילון / אבו גאנם")
+        with c5:
+            new_nl = st.number_input("תקן תחתון (ל'/ש')", min_value=0.0, step=0.5,
+                                      value=None, placeholder="לדוגמה: 15")
+        with c6:
+            new_nh = st.number_input("תקן עליון (ל'/ש')", min_value=0.0, step=0.5,
+                                      value=None, placeholder="לדוגמה: 22")
+        new_notes = st.text_input("הערות", placeholder="אופציונלי")
+        submitted = st.form_submit_button("➕ הוסף כלי", type="primary",
+                                           use_container_width=True)
+        if submitted:
+            ok, msg = control_db.add_tool(
+                license_num=int(new_lic) if new_lic else 0,
+                tool_name=new_name or "",
+                tool_type=new_type or "",
+                owner=new_owner or "",
+                norm_low=float(new_nl) if new_nl else None,
+                norm_high=float(new_nh) if new_nh else None,
+                notes=new_notes or "",
+            )
+            if ok:
+                st.success(msg)
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error(msg)
+
+    # ── רשימה + מחיקה ──
+    sec("רשימת כלים (SQLite)", meta="לחץ Delete על שורה למחיקה")
+    tools = control_db.list_tools()
+    if tools.empty:
+        st.caption("אין כלים שהוזנו ידנית. הוסף כלי בטופס למעלה.")
+    else:
+        show_cols = ["license_num", "tool_name", "tool_type", "owner",
+                      "norm_low", "norm_high", "notes"]
+        show_cols = [c for c in show_cols if c in tools.columns]
+        disp = tools[show_cols].copy()
+        heb = {"license_num": "מס' רישוי", "tool_name": "שם / דגם", "tool_type": "סוג",
+               "owner": "בעלים", "norm_low": "תקן ת'", "norm_high": "תקן ע'",
+               "notes": "הערות"}
+        disp.columns = [heb.get(c, c) for c in show_cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        # Delete by license_num
+        c_d1, c_d2 = st.columns([1, 3])
+        with c_d1:
+            del_lic = st.number_input("מחק לפי רישוי", min_value=1, step=1,
+                                       value=None, key="del_tool_lic")
+        with c_d2:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            if st.button("🗑 מחק כלי", key="del_tool_btn",
+                         disabled=not del_lic, type="secondary"):
+                if control_db.delete_tool_by_license(int(del_lic)):
+                    st.success(f"כלי {del_lic} נמחק")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(f"כלי {del_lic} לא נמצא ב-SQLite (ייתכן שהוא ב-xlsx בלבד)")
+
+    # ── מוצג גם: tools מ-xlsx (לקריאה בלבד) ──
+    from pipeline import _load_tools_registry, TOOLS_REGISTRY
+    merged = _load_tools_registry()
+    n_xlsx = (len(merged) - len(tools)) if not tools.empty else len(merged)
+    if n_xlsx > 0:
+        with st.expander(f"📄 כלים מ-xlsx ({n_xlsx}) - לקריאה בלבד"):
+            st.caption(f"מקור: {TOOLS_REGISTRY.name}. כדי לערוך - הוסף את אותו license_num ב-SQLite.")
+            xlsx_only = merged[~merged["license_num"].isin(
+                set(tools["license_num"].dropna().astype(int)) if not tools.empty else set()
+            )]
+            cols = [c for c in ["license_num", "tool_name", "tool_type", "norm_low", "norm_high"]
+                    if c in xlsx_only.columns]
+            st.dataframe(xlsx_only[cols], use_container_width=True, hide_index=True)
+
+
+# ── Quick fuel entry form ────────────────────────────────────
+def _render_fuel_quick_form(project_id: str) -> None:
+    """טופס מהיר להוספת תדלוק יחיד - נוח כש יש רק תדלוק אחד להזין."""
+    from pipeline import _load_tools_registry
+    tools = _load_tools_registry()
+    tool_options: dict[str, int | None] = {"— בחר כלי —": None}
+    if not tools.empty:
+        for _, r in tools.iterrows():
+            lic = r.get("license_num")
+            name = r.get("tool_name", "")
+            if pd.notna(lic):
+                tool_options[f"{int(lic)} · {name}"] = int(lic)
+
+    with st.expander("🆕 הוספת תדלוק מהירה", expanded=False):
+        with st.form("quick_fuel_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                pick = st.selectbox("כלי", list(tool_options.keys()),
+                                     key="qf_tool")
+                qf_date = st.date_input("תאריך", value=date_cls.today(), key="qf_date")
+                qf_driver = st.text_input("נהג / מפעיל", key="qf_driver")
+            with c2:
+                qf_supplier = st.text_input("ספק", key="qf_supplier",
+                                              placeholder="לדוגמה: נ. ג'אן")
+                qf_invoice = st.text_input("מס' חשבונית", key="qf_invoice")
+                qf_liters = st.number_input("ליטרים *", min_value=0.0, step=1.0,
+                                              key="qf_liters")
+            c3, c4 = st.columns(2)
+            with c3:
+                qf_price = st.number_input("₪ לליטר (אופציונלי)", min_value=0.0, step=0.1,
+                                             key="qf_price")
+            with c4:
+                qf_notes = st.text_input("הערות", key="qf_notes")
+
+            submitted = st.form_submit_button("⛽ שמור תדלוק", type="primary",
+                                                use_container_width=True)
+            if submitted:
+                lic = tool_options.get(pick)
+                if lic is None:
+                    st.error("בחר כלי מהרשימה.")
+                elif qf_liters <= 0:
+                    st.error("הזן ליטרים גדולים מ-0.")
+                else:
+                    tool_name = pick.split("·", 1)[1].strip() if "·" in pick else ""
+                    total = qf_liters * qf_price if qf_price > 0 else None
+                    row_df = pd.DataFrame([{
+                        "id": None,
+                        "date": qf_date.strftime("%Y-%m-%d"),
+                        "tool_name": tool_name,
+                        "license_num": lic,
+                        "driver": qf_driver or None,
+                        "supplier": qf_supplier or None,
+                        "invoice_num": qf_invoice or None,
+                        "liters": qf_liters,
+                        "price_per_liter": qf_price if qf_price > 0 else None,
+                        "total_cost": total,
+                        "notes": qf_notes or None,
+                    }])
+                    result = control_db.bulk_save("fuel_logs", row_df, project_id)
+                    if result["errors"]:
+                        st.error("\n".join(result["errors"]))
+                    else:
+                        st.success(f"תדלוק נשמר: {lic} · {qf_liters:.0f} ל' "
+                                   + (f"· ₪{total:,.0f}" if total else ""))
+                        st.cache_data.clear()
+                        st.rerun()
