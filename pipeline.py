@@ -87,8 +87,38 @@ def _project_meta(project_id: str) -> dict:
     return {"project_id": project_id, "project_name": project_id, "site_name": project_id}
 
 
+def _find_file(month_dir: Path, keywords: list[str], explicit_name: str | None = None) -> Path | None:
+    """מאתר קובץ בתיקייה לפי שם מדויק או לפי מילות מפתח בעברית/אנגלית.
+
+    תומך בשמות כמו 'chashbashevet.xlsx', 'כרטיס 12.25.xlsx', 'מאזן 03.26.xlsx'.
+    """
+    if explicit_name:
+        p = month_dir / explicit_name
+        if p.exists():
+            return p
+    if not month_dir.exists():
+        return None
+    for f in month_dir.iterdir():
+        if not f.is_file() or f.suffix.lower() not in (".xlsx", ".xls"):
+            continue
+        # קבצי lock של Excel (~$...) - דלג
+        if f.name.startswith("~$"):
+            continue
+        name_lower = f.name.lower()
+        for kw in keywords:
+            if kw.lower() in name_lower:
+                return f
+    return None
+
+
 def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
     """טוען את כל נתוני חודש בודד בפרויקט בודד.
+
+    מאתר קבצים אוטומטית לפי מילות מפתח בשם הקובץ:
+        כרטיס / chashbashevet → כרטיס הנהלה
+        מאזן  / balance       → מאזן בוחן (placeholder - לא נטען עדיין)
+        solar / סולר / תדלוק  → דוח תדלוק
+        hours / שעות          → דוח שעות
 
     Args:
         project_id: מזהה הפרויקט (תואם שם תיקייה ב-data/projects/).
@@ -104,24 +134,24 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
 
     out: dict[str, pd.DataFrame] = {}
 
-    chash_path = month_dir / "chashbashevet.xlsx"
+    chash_path = _find_file(month_dir, ["chashbashevet", "כרטיס"], "chashbashevet.xlsx")
     out["chashbashevet"] = (
         chashbashevet_loader.load_chashbashevet(chash_path)
-        if chash_path.exists()
+        if chash_path
         else pd.DataFrame(columns=chashbashevet_loader.OUTPUT_COLS)
     )
 
-    solar_path = month_dir / "solar.xlsx"
+    solar_path = _find_file(month_dir, ["solar", "סולר", "תדלוק"], "solar.xlsx")
     out["solar"] = (
         solar_loader.load_solar(solar_path, site_name)
-        if solar_path.exists()
+        if solar_path
         else pd.DataFrame(columns=solar_loader.OUTPUT_COLS)
     )
 
-    hours_path = month_dir / "hours.xlsx"
+    hours_path = _find_file(month_dir, ["hours", "שעות"], "hours.xlsx")
     out["hours"] = (
         hours_loader.load_hours(hours_path)
-        if hours_path.exists()
+        if hours_path
         else pd.DataFrame(columns=hours_loader.OUTPUT_COLS)
     )
 
