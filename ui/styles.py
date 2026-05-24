@@ -1,6 +1,7 @@
 """CSS block ל-Streamlit. מותאם מ-app_gpt_dashboard.py של billing_system.
 
-צבעי מותג של חברת בנייה: כתום-אדמה (#D97706) במקום ירוק.
+צבעי מותג: ירוק (#16A34A) לפי הלוגו של "מ. אילון אביב נכסים בע"מ" -
+חברת עבודות עפר וניפוץ עם זהות סביבתית.
 """
 from __future__ import annotations
 
@@ -36,12 +37,12 @@ body:has(.exec-summary) #ca-boot-veil {
     animation:none !important;
 }
 #ca-boot-veil .boot-spinner {
-    width:54px;height:54px;border:5px solid #FED7AA;
-    border-top-color:#D97706;border-radius:50%;
+    width:54px;height:54px;border:5px solid #BBF7D0;
+    border-top-color:#16A34A;border-radius:50%;
     animation:_ca_boot_spin .8s linear infinite;margin-bottom:22px;
 }
 #ca-boot-veil .boot-title {
-    font-size:16px;font-weight:800;color:#7C2D12;letter-spacing:.2px;
+    font-size:16px;font-weight:800;color:#0E5A2E;letter-spacing:.2px;
     margin-bottom:4px;
 }
 #ca-boot-veil .boot-sub {
@@ -63,12 +64,12 @@ MAIN_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 
-/* ═══ Brand palette - construction (orange/earth) ═══ */
+/* ═══ Brand palette - environmental green per company logo ═══ */
 :root {
-  --brand-primary:      #D97706;
-  --brand-primary-dark: #7C2D12;
-  --brand-primary-soft: #FFF7ED;
-  --brand-primary-mid:  #FED7AA;
+  --brand-primary:      #16A34A;
+  --brand-primary-dark: #0E5A2E;
+  --brand-primary-soft: #F0FDF4;
+  --brand-primary-mid:  #BBF7D0;
   --status-good:        #059669;
   --status-good-soft:   #F0FDF4;
   --status-good-border: #BBF7D0;
@@ -105,15 +106,15 @@ footer{display:none!important;}
 .block-container{padding:0 1.5rem 4rem!important;max-width:100%!important;overflow-x:hidden!important;}
 
 /* ═══ Top bar (sticky) ═══ */
-.top-bar{background:linear-gradient(135deg,#7C2D12 0%,#9A3412 55%,#D97706 100%);
+.top-bar{background:linear-gradient(135deg,#052E16 0%,#0E5A2E 55%,#16A34A 100%);
   color:#fff;height:62px;width:100%;display:flex;align-items:center;
   justify-content:space-between;padding:0 1.5rem;margin-bottom:18px;
-  box-shadow:0 2px 12px rgba(124,45,18,.35);
+  box-shadow:0 2px 12px rgba(5,46,22,.35);
   border-radius:0 0 14px 14px;position:sticky;top:0;z-index:100;}
 .top-bar-brand{display:flex;align-items:center;gap:12px;}
 .top-bar-logo{height:42px;width:42px;border-radius:50%;background:#fff;
   display:inline-flex;align-items:center;justify-content:center;font-size:22px;
-  box-shadow:0 1px 4px rgba(0,0,0,.2),0 0 0 1.5px rgba(217,119,6,0.5);}
+  box-shadow:0 1px 4px rgba(0,0,0,.2),0 0 0 1.5px rgba(22,163,74,0.5);}
 .top-bar-title{font-size:16px;font-weight:800;letter-spacing:-.2px;
   display:flex;align-items:center;}
 .top-bar-title .ltd{font-weight:600;opacity:.85;}
@@ -133,8 +134,8 @@ footer{display:none!important;}
 .sys-pill.bad .dot{background:#F87171;box-shadow:0 0 6px #F87171;}
 .meta-pill{display:inline-flex;align-items:center;gap:6px;
   background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
-  color:#FFF7ED;font-size:11px;font-weight:500;padding:5px 11px;border-radius:99px;}
-.meta-pill i.ti{font-size:13px;color:#FED7AA;}
+  color:#F0FDF4;font-size:11px;font-weight:500;padding:5px 11px;border-radius:99px;}
+.meta-pill i.ti{font-size:13px;color:#BBF7D0;}
 
 /* Tabs strip sticky just under top bar */
 [data-baseweb="tab-list"]{position:sticky!important;top:62px!important;
@@ -148,7 +149,7 @@ footer{display:none!important;}
 [data-testid="stVerticalBlock"]:has(.filter-marker)::before{
   content:"";display:block;position:absolute;top:-1px;right:-1px;left:-1px;
   height:3px;border-radius:14px 14px 0 0;
-  background:linear-gradient(90deg,#7C2D12 0%,#D97706 50%,#FBBF24 100%);}
+  background:linear-gradient(90deg,#0E5A2E 0%,#16A34A 50%,#22C55E 100%);}
 .filter-marker{font-size:11px;font-weight:800;color:#475569;
   text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;
   display:flex;align-items:center;gap:6px;}
@@ -310,18 +311,18 @@ footer{display:none!important;}
 [data-testid="stDataFrame"] td{font-size:12px!important;padding:11px 14px!important;
   border-bottom:1px solid #F1F5F9!important;color:#0F172A!important;}
 [data-testid="stDataFrame"] tr:nth-child(even) td{background:#FAFBFD!important;}
-[data-testid="stDataFrame"] tr:hover td{background:#FFF7ED!important;cursor:default;}
+[data-testid="stDataFrame"] tr:hover td{background:#F0FDF4!important;cursor:default;}
 
 /* ═══ Buttons ═══ */
 button[kind="primary"]{transition:all .2s;}
 button[kind="primary"]:hover{transform:translateY(-1px);
-  box-shadow:0 4px 12px rgba(217,119,6,.35);}
+  box-shadow:0 4px 12px rgba(22,163,74,.35);}
 [data-testid="stFormSubmitButton"]>button{
-  background:linear-gradient(135deg,#D97706 0%,#B45309 100%)!important;
-  border-color:#D97706!important;color:#fff!important;font-weight:700!important;}
+  background:linear-gradient(135deg,#16A34A 0%,#0E5A2E 100%)!important;
+  border-color:#16A34A!important;color:#fff!important;font-weight:700!important;}
 [data-testid="stFormSubmitButton"]>button:hover{
-  background:linear-gradient(135deg,#B45309 0%,#92400E 100%)!important;
-  box-shadow:0 4px 14px rgba(217,119,6,.4)!important;transform:translateY(-1px);}
+  background:linear-gradient(135deg,#0E5A2E 0%,#052E16 100%)!important;
+  box-shadow:0 4px 14px rgba(22,163,74,.4)!important;transform:translateY(-1px);}
 
 /* ═══ Expanders ═══ */
 [data-testid="stExpander"] details summary{
@@ -390,9 +391,9 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
 [data-baseweb="tab-list"] button[data-baseweb="tab"]:hover{
   background:var(--brand-primary-soft)!important;color:var(--brand-primary-dark)!important;}
 [data-baseweb="tab-list"] button[data-baseweb="tab"][aria-selected="true"]{
-  background:linear-gradient(135deg,#7C2D12 0%,#D97706 100%)!important;
+  background:linear-gradient(135deg,#0E5A2E 0%,#16A34A 100%)!important;
   color:#FFFFFF!important;
-  box-shadow:0 3px 10px rgba(217,119,6,.32)!important;}
+  box-shadow:0 3px 10px rgba(22,163,74,.32)!important;}
 [data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
 [data-baseweb="tab-list"] [data-baseweb="tab-border"]{display:none!important;}
 
@@ -426,7 +427,7 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
   font-weight:700!important;}
 .stDownloadButton button:hover{
   background:var(--brand-primary-soft)!important;
-  box-shadow:0 3px 10px rgba(217,119,6,.18)!important;}
+  box-shadow:0 3px 10px rgba(22,163,74,.18)!important;}
 
 /* --- Section card: clean wrapper for in-tab content blocks --------- */
 .section-card{background:#FFFFFF;border:1px solid var(--line);
@@ -494,9 +495,9 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
   color:var(--status-good);border:1px solid var(--status-good-border);}
 
 /* --- Executive banner (for conclusions / summary tabs) ------------- */
-.exec-banner{background:linear-gradient(135deg,#7C2D12 0%,#D97706 50%,#FBBF24 100%);
+.exec-banner{background:linear-gradient(135deg,#0E5A2E 0%,#16A34A 50%,#22C55E 100%);
   color:#fff;border-radius:14px;padding:18px 22px;margin-bottom:16px;
-  box-shadow:0 8px 24px rgba(217,119,6,.22);display:flex;
+  box-shadow:0 8px 24px rgba(22,163,74,.22);display:flex;
   align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;}
 .exec-banner-title{font-size:15px;font-weight:800;letter-spacing:.2px;
   display:flex;align-items:center;gap:9px;}
@@ -522,7 +523,7 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
 /* --- Non-primary buttons: subtle base hover with brand tint -------- */
 .stButton > button{transition:all .15s;border-radius:10px!important;
   font-weight:700!important;}
-.stButton > button:hover{box-shadow:0 3px 10px rgba(217,119,6,.18);
+.stButton > button:hover{box-shadow:0 3px 10px rgba(22,163,74,.18);
   border-color:var(--brand-primary)!important;}
 
 /* --- Caption: tighter, gentler ------------------------------------- */
@@ -531,7 +532,7 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
 /* --- Selectbox / multiselect: brand focus ring -------------------- */
 [data-baseweb="select"]:focus-within > div{
   border-color:var(--brand-primary)!important;
-  box-shadow:0 0 0 2px rgba(217,119,6,.18)!important;}
+  box-shadow:0 0 0 2px rgba(22,163,74,.18)!important;}
 
 /* --- KPI cells: hover chip-row reveal (drill on hover) ------------- */
 .kpi-cell .kpi-chip-row + .kpi-chip-row{
