@@ -362,58 +362,110 @@ def _tab_expenses(df: pd.DataFrame) -> None:
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
-# ─── Tab 4: עובדים ושכר ─────────────────────────────────────
+# ─── Tab 4: עובדים ושכר (עם site_tracking) ──────────────────
 def _tab_employees(df: pd.DataFrame) -> None:
+    from pipeline import load_site_tracking_data
+    project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
+
+    # Top: salary cost from chashbashevet (כספי)
     salary_df = _filter_by_keywords(df, KEYWORD_CATEGORIES["salary"])
     if "amount" in salary_df.columns:
         salary_df = salary_df[salary_df["amount"] > 0]
+    total_salary = float(salary_df["amount"].sum()) if "amount" in salary_df.columns and not salary_df.empty else 0
 
-    if salary_df.empty:
-        ins("amber", "⚠️", "אין נתוני שכר לפרויקט זה",
-            "כרטיס ההנהלה לא כולל חשבונות עם מילים: שכר, עובדים, ביטוח לאומי, גמל וכו'.")
-        return
+    # Per-employee daily hours from site_tracking (תפעולי)
+    site_data = load_site_tracking_data(project_id) if project_id else {}
+    emp_hours = site_data.get("employees_hours", pd.DataFrame())
 
-    total_salary = float(salary_df["amount"].sum()) if "amount" in salary_df.columns else 0
-    st.metric("סה\"כ עלות שכר בפרויקט", _fmt_money(total_salary))
+    cA, cB, cC = st.columns(3)
+    cA.metric("עלות שכר בפרויקט", _fmt_money(total_salary))
+    if not emp_hours.empty and "name" in emp_hours.columns:
+        cB.metric("עובדים פעילים", str(emp_hours["name"].nunique()))
+        if "work_hours" in emp_hours.columns:
+            cC.metric("סה\"כ שעות עבודה", f"{emp_hours['work_hours'].sum():,.0f}")
 
+    # ── חלוקה לפי חשבון שכר (כספי) ──
     sec("חלוקה לפי חשבון שכר")
-    if "account_name" in salary_df.columns:
+    if salary_df.empty:
+        st.caption("אין נתוני חשבונות שכר ב-chashbashevet.")
+    else:
         by_acct = salary_df.groupby("account_name")["amount"].agg(["sum", "count"]).reset_index()
         by_acct.columns = ["חשבון", "סכום", "תנועות"]
         by_acct["סכום"] = by_acct["סכום"].round(0)
         st.dataframe(by_acct.sort_values("סכום", ascending=False),
                      use_container_width=True, hide_index=True)
 
-    sec("שכר לפי חודש")
-    if "month" in salary_df.columns:
-        monthly = salary_df.groupby("month")["amount"].sum().reset_index()
-        monthly.columns = ["חודש", "עלות שכר"]
-        st.dataframe(monthly.round(0), use_container_width=True, hide_index=True)
+    # ── רמת עובד בודד (מ-site_tracking) ──
+    sec("עובדים - שעות יומיות", meta="מ-site_tracking.xlsx")
+    if emp_hours.empty:
+        ins("blue", "ℹ️", "אין נתוני שעות עובדים", "הוסף site_tracking.xlsx עם גליון 'שעות עבודה עובדים'.")
+    else:
+        per_emp = emp_hours.groupby("name").agg(
+            ימי_עבודה=("date", "nunique"),
+            סה_כ_שעות=("work_hours", "sum"),
+        ).reset_index().sort_values("סה_כ_שעות", ascending=False)
+        per_emp["סה_כ_שעות"] = per_emp["סה_כ_שעות"].round(1)
+        per_emp.columns = ["שם עובד", "ימי עבודה", "סה\"כ שעות"]
+        st.dataframe(per_emp, use_container_width=True, hide_index=True)
 
-    ins("blue", "ℹ️", "פירוט ברמת עובד בודד",
-        "המאזן/כרטיס ההנהלה מספק סיכומים ברמת חשבון. לפירוט שעות+עלות לכל עובד "
-        "נדרש דוח שכר ייעודי - יתווסף בעתיד.")
+        # Drill-down per employee
+        with st.expander("פירוט יומי לכל עובד"):
+            cols = [c for c in ["date", "name", "start_time", "end_time",
+                                "work_hours", "notes"] if c in emp_hours.columns]
+            heb = {"date": "תאריך", "name": "שם", "start_time": "התחלה",
+                   "end_time": "סיום", "work_hours": "שעות", "notes": "הערות"}
+            disp = emp_hours[cols].sort_values("date" if "date" in cols else cols[0])
+            disp.columns = [heb.get(c, c) for c in cols]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
-# ─── Tab 5: ספקים וקבלנים ───────────────────────────────────
+# ─── Tab 5: ספקים וקבלנים (עם site_tracking) ────────────────
 def _tab_suppliers(df: pd.DataFrame) -> None:
+    from pipeline import load_site_tracking_data
+    project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
+
     sec("Top 30 ספקים בפרויקט")
     sup = project_aggregator.by_supplier(df, top_n=30)
     if sup.empty:
         ins("blue", "ℹ️", "אין ספקים מתועדים", "ספקים מחולצים מ-'פרטים' בכרטיס ההנהלה.")
-        return
-    disp = sup.copy()
-    disp["total_amount"] = disp["total_amount"].round(0)
-    disp.columns = ["ספק", "סה\"כ (₪)", "תנועות", "פרויקטים", "מתאריך", "עד תאריך"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    else:
+        disp = sup.copy()
+        disp["total_amount"] = disp["total_amount"].round(0)
+        disp.columns = ["ספק", "סה\"כ (₪)", "תנועות", "פרויקטים", "מתאריך", "עד תאריך"]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
 
-    sec("קבלני משנה בלבד")
+    sec("קבלני משנה - חיובים מחשבשבת")
     subs = _filter_by_keywords(df, KEYWORD_CATEGORIES["subcontractors"])
     if subs.empty:
         st.caption("לא זוהו תנועות תחת 'קבלני משנה'.")
     else:
         cols = [c for c in ["date", "supplier", "description", "amount"] if c in subs.columns]
         st.dataframe(subs[cols], use_container_width=True, hide_index=True)
+
+    # ── קבלני משנה - שעות תפעוליות מ-site_tracking ──
+    sec("קבלני משנה - שעות עבודה בשטח", meta="מ-site_tracking.xlsx")
+    site_data = load_site_tracking_data(project_id) if project_id else {}
+    sub_hours = site_data.get("subcontractors_hours", pd.DataFrame())
+    if sub_hours.empty:
+        st.caption("אין נתוני שעות קבלני משנה ב-site_tracking.")
+    else:
+        per_sub = sub_hours.groupby("name").agg(
+            ימי_עבודה=("date", "nunique"),
+            סה_כ_שעות=("work_hours", "sum"),
+        ).reset_index().sort_values("סה_כ_שעות", ascending=False)
+        per_sub["סה_כ_שעות"] = per_sub["סה_כ_שעות"].round(1)
+        per_sub.columns = ["שם קבלן/משאית", "ימי עבודה", "סה\"כ שעות"]
+        st.dataframe(per_sub, use_container_width=True, hide_index=True)
+
+        with st.expander("פירוט יומי לקבלני משנה"):
+            cols = [c for c in ["date", "name", "license_num", "start_time",
+                                "end_time", "work_hours", "notes"] if c in sub_hours.columns]
+            heb = {"date": "תאריך", "name": "שם", "license_num": "מס' רכב",
+                   "start_time": "התחלה", "end_time": "סיום",
+                   "work_hours": "שעות", "notes": "הערות"}
+            disp = sub_hours[cols].sort_values("date" if "date" in cols else cols[0])
+            disp.columns = [heb.get(c, c) for c in cols]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── Tab 6: סולר ואחזקה (מודול מלא) ─────────────────────────
@@ -723,6 +775,50 @@ def _tab_vehicles_tools(df: pd.DataFrame) -> None:
             st.dataframe(disp, use_container_width=True, hide_index=True)
     else:
         st.caption("נדרשים גם solar.xlsx וגם hours.xlsx לזיהוי חריגות סולר.")
+
+    # ── טיפולים ─ next service due (מ-site_tracking) ──
+    from pipeline import load_site_tracking_data
+    project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
+    site_data = load_site_tracking_data(project_id) if project_id else {}
+
+    treatments = site_data.get("treatments", pd.DataFrame())
+    if not treatments.empty:
+        sec("מרווחי טיפול וטיפולים הבאים", meta="מ-site_tracking.xlsx")
+        cols = [c for c in ["tool_name", "license_num", "owner",
+                            "engine_hours_current", "engine_hours_last_service",
+                            "last_service_date", "service_interval",
+                            "next_service_hours", "hours_until_service"]
+                if c in treatments.columns]
+        heb = {"tool_name": "שם כלי", "license_num": "מס' רישוי", "owner": "בעלים",
+               "engine_hours_current": "שעות נוכחיות",
+               "engine_hours_last_service": "שעות בטיפול אחרון",
+               "last_service_date": "תאריך טיפול",
+               "service_interval": "מרווח טיפול",
+               "next_service_hours": "שעות לטיפול הבא",
+               "hours_until_service": "שעות נותרות"}
+        disp = treatments[cols].copy()
+        disp.columns = [heb.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    log = site_data.get("treatments_log", pd.DataFrame())
+    if not log.empty:
+        sec("יומן טיפולים")
+        st.dataframe(log, use_container_width=True, hide_index=True)
+
+    fluids = site_data.get("other_fluids", pd.DataFrame())
+    if not fluids.empty:
+        sec("צריכת נוזלים אחרים", meta="אוריאה / שמן מנוע / שמן הידראולי")
+        agg_cols = [c for c in ["urea_l", "engine_oil_l", "hydraulic_oil_l", "engine_oil_2_l"]
+                    if c in fluids.columns]
+        if agg_cols and "tool_name" in fluids.columns:
+            per_tool = fluids.groupby(["license_num", "tool_name"])[agg_cols].sum().reset_index()
+            per_tool[agg_cols] = per_tool[agg_cols].round(1)
+            heb = {"license_num": "מס' רישוי", "tool_name": "שם כלי",
+                   "urea_l": "אוריאה (ל')", "engine_oil_l": "שמן מנוע (ל')",
+                   "hydraulic_oil_l": "שמן הידראולי (ל')",
+                   "engine_oil_2_l": "שמן מנוע 2 (ל')"}
+            per_tool.columns = [heb.get(c, c) for c in per_tool.columns]
+            st.dataframe(per_tool, use_container_width=True, hide_index=True)
 
     # ── הסבר על מה שחסר ──
     with st.expander("💡 מה שעוד דורש קלט חיצוני"):
