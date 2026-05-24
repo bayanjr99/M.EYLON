@@ -124,6 +124,18 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
 
     summary = project_aggregator.project_summary(df_master, project_id)
 
+    # ── Period header: scope + months + tx count ──
+    months_str = ", ".join(summary["months"]) if summary["months"] else "—"
+    period_html = (
+        f'<div class="period-header">'
+        f'<span>📅 <b>{len(summary["months"])} חודשים</b>: {months_str}'
+        f'<span class="sep">·</span> {summary["num_transactions"]:,} תנועות'
+        f'<span class="sep">·</span> {summary["num_suppliers"]} ספקים</span>'
+        f'<span class="tag">תמונת פרויקט</span>'
+        f'</div>'
+    )
+    st.markdown(period_html, unsafe_allow_html=True)
+
     tabs = st.tabs([
         "📊 סקירה כללית",
         "💰 הכנסות",
@@ -430,30 +442,60 @@ def _tab_fuel_maintenance(df: pd.DataFrame) -> None:
     c4.metric("₪ / שעת עבודה", f"{cost_per_hour:,.0f}" if cost_per_hour else "—")
     st.caption(f"{num_fuelings} תדלוקים · {int(total_work_h):,} שעות עבודה")
 
-    # ── מאזן מלאי (placeholder) ──
-    sec("מאזן מלאי סולר", meta="מצריך קלט ידני של פתיחה/סגירה")
-    st.markdown(
-        f"""<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;
-        padding:14px 18px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
-            letter-spacing:.8px;font-weight:700">מלאי פתיחה</div>
-            <div style="font-size:18px;font-weight:800;color:#94A3B8">— ל'</div></div>
-          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
-            letter-spacing:.8px;font-weight:700">+ קניות</div>
-            <div style="font-size:18px;font-weight:800;color:var(--status-good)">
-              {total_liters:,.0f} ל'</div></div>
-          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
-            letter-spacing:.8px;font-weight:700">− שימושים</div>
-            <div style="font-size:18px;font-weight:800;color:var(--status-bad)">
-              {total_liters:,.0f} ל'</div></div>
-          <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
-            letter-spacing:.8px;font-weight:700">= מלאי סגירה</div>
-            <div style="font-size:18px;font-weight:800;color:#94A3B8">— ל'</div></div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-    st.caption("מלאי פתיחה/סגירה לא מנוטרים אוטומטית. לתצוגה מלאה - הוסף קובץ "
-               "<code>fuel_inventory.xlsx</code> עם עמודות month/opening_l/closing_l.")
+    # ── מאזן מלאי (משלב fuel_inventory.xlsx אם קיים) ──
+    sec("מאזן מלאי סולר", meta="מ-fuel_inventory.xlsx")
+    project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
+    inv_combined = _collect_fuel_inventory(project_id) if project_id else pd.DataFrame()
+
+    if inv_combined.empty:
+        st.markdown(
+            f"""<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;
+            padding:14px 18px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+              <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+                letter-spacing:.8px;font-weight:700">מלאי פתיחה</div>
+                <div style="font-size:18px;font-weight:800;color:#94A3B8">— ל'</div></div>
+              <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+                letter-spacing:.8px;font-weight:700">+ קניות</div>
+                <div style="font-size:18px;font-weight:800;color:var(--status-good)">
+                  {total_liters:,.0f} ל'</div></div>
+              <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+                letter-spacing:.8px;font-weight:700">− שימושים</div>
+                <div style="font-size:18px;font-weight:800;color:var(--status-bad)">
+                  {total_liters:,.0f} ל'</div></div>
+              <div><div style="font-size:10px;color:#64748B;text-transform:uppercase;
+                letter-spacing:.8px;font-weight:700">= מלאי סגירה</div>
+                <div style="font-size:18px;font-weight:800;color:#94A3B8">— ל'</div></div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        st.caption("אין fuel_inventory.xlsx. הוסף קובץ עם עמודות "
+                   "<code>חודש / מלאי פתיחה (ל') / מלאי סגירה (ל')</code> "
+                   "כדי לראות מאזן מלאי מלא.")
+    else:
+        # liters per month
+        liters_per_month_purchases = {}
+        if not fuel_purchases.empty and avg_price > 0 and "month" in fuel_purchases.columns:
+            for m, grp in fuel_purchases.groupby("month"):
+                liters_per_month_purchases[m] = float(grp["amount"].sum()) / avg_price
+        usage_per_month = {}
+        if not solar.empty and "month" in solar.columns:
+            for m, grp in solar.groupby("month"):
+                usage_per_month[m] = float(grp["liters"].sum())
+
+        from core.fuel_inventory import compute_balance
+        balance = compute_balance(inv_combined, liters_per_month_purchases, usage_per_month)
+        if balance.empty:
+            st.caption("מאזן ריק.")
+        else:
+            disp = balance.copy()
+            disp.columns = ["חודש", "פתיחה (ל')", "קניות (ל')", "שימושים (ל')",
+                            "סגירה צפויה (ל')", "סגירה בפועל (ל')",
+                            "הפרש (ל')", "סטטוס"]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+            n_bad = int((balance["status"] == "חוסר").sum())
+            if n_bad:
+                ins("amber", "⚠️", f"{n_bad} חודשים עם חוסר במלאי",
+                    "ההפרש מצביע על שימוש לא מתועד או פחת חריג.")
 
     # ── קניות סולר לפי ספק ──
     sec("קניות סולר לפי ספק")
@@ -714,6 +756,26 @@ def _tab_transactions(df: pd.DataFrame) -> None:
         st.caption(f"{len(disp):,} תנועות תואמות")
 
     st.dataframe(disp, use_container_width=True, hide_index=True)
+
+
+# ─── עזר: איסוף fuel_inventory לכל חודשי הפרויקט ────────────
+def _collect_fuel_inventory(project_id: str) -> pd.DataFrame:
+    """קורא fuel_inventory.xlsx מכל החודשים של הפרויקט ומאחד."""
+    from core.fuel_inventory import load_fuel_inventory
+    from pipeline import PROJECTS_ROOT, list_available_months, _find_file
+
+    frames = []
+    for m in list_available_months(project_id):
+        month_dir = PROJECTS_ROOT / project_id / m
+        inv_path = _find_file(month_dir, ["fuel_inventory", "מלאי סולר", "מלאי"],
+                              "fuel_inventory.xlsx")
+        if inv_path:
+            inv = load_fuel_inventory(inv_path)
+            if not inv.empty:
+                frames.append(inv)
+    if not frames:
+        return pd.DataFrame(columns=["month", "opening_l", "closing_l"])
+    return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["month"])
 
 
 # ─── Tab 9: בדיקות וחריגות (QA) ─────────────────────────────

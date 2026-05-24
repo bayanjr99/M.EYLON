@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 INCOME_ACCOUNTS: set[int] = {927, 951, 7367}
 
+# חשבונות שכר ונלוות - בדרך כלל אין להם "ספק" אמיתי
+# (התיאור הוא "שכ"ע 12/25" וכו'). השמירה: אם התיאור _נראה_ כקוד פנימי
+# (מתחיל ב-שכ"ע / מכיל ##/## בלבד) נדכא; אחרת ניתן ייחוס נורמלי כי
+# יש ספקי שכר אמיתיים (סוכנויות כ"א, ביטוח לאומי וכו').
+SALARY_ACCOUNTS: set[int] = {
+    7366, 74326, 7368, 7369, 7370, 7371,
+}
+
+# regex לתיאור פנימי של שכר: "שכ"ע MM/YY" או "שכר MM/YY"
+import re as _re
+_INTERNAL_SALARY_DESC = _re.compile(r"^שכ[\"']?ע?\s*\d{1,2}/\d{2,4}")
+
 # מיקומי עמודות (0-indexed). עמודה A = 0, B = 1 וכו'.
 COL_ACCOUNT_NAME = 0   # A
 COL_ACCOUNT_NUM = 1    # B
@@ -103,6 +115,13 @@ def load_chashbashevet(file_path: str | Path) -> pd.DataFrame:
         else:
             amount = debit - credit
 
+        # ספק: דכא רק אם זה חשבון שכר ובתיאור הוא קוד פנימי ("שכ"ע MM/YY").
+        # אם בחשבון שכר יש ספק אמיתי (ינאי פרסונל וכו') - נשמור אותו.
+        if current_account_num in SALARY_ACCOUNTS and _INTERNAL_SALARY_DESC.match(details):
+            supplier = ""
+        else:
+            supplier = _extract_supplier(details)
+
         records.append({
             "account_num": current_account_num,
             "account_name": current_account_name,
@@ -111,7 +130,7 @@ def load_chashbashevet(file_path: str | Path) -> pd.DataFrame:
             "debit": debit,
             "credit": credit,
             "amount": amount,
-            "supplier": _extract_supplier(details),
+            "supplier": supplier,
         })
 
     df = pd.DataFrame(records, columns=OUTPUT_COLS)

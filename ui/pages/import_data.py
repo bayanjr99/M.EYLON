@@ -48,6 +48,12 @@ SLOTS: dict[str, dict] = {
         "keywords": ["שעות", "hours"],
         "required": False,
     },
+    "fuel_inventory": {
+        "label": "מאזן מלאי סולר",
+        "default_name": "fuel_inventory.xlsx",
+        "keywords": ["fuel_inventory", "מלאי סולר", "מלאי"],
+        "required": False,
+    },
 }
 
 

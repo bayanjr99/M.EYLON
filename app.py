@@ -84,6 +84,18 @@ has_data = not df_master.empty
 
 # ═══ TOP BAR ════════════════════════════════════════════════
 _now = datetime.now().strftime("%d/%m/%Y %H:%M")
+# Last-build timestamp from SQLite audit log (if available)
+try:
+    from core import db
+    _recent = db.recent_events(1)
+    if not _recent.empty:
+        _last_build = pd.to_datetime(_recent.iloc[0]["timestamp"]).strftime("%d/%m %H:%M")
+        _last_build_txt = f' · עודכן: {_last_build}'
+    else:
+        _last_build_txt = ""
+except Exception:
+    _last_build_txt = ""
+
 selected = st.session_state.get("selected_project_id")
 if selected:
     proj_name = next((p["project_name"] for p in projects
@@ -91,7 +103,7 @@ if selected:
     _meta = f'{_now} · פרויקט פעיל: {proj_name}'
     _status, _status_txt = "ok", "מצב פרויקט"
 elif has_data:
-    _meta = f'{_now} · {len(projects)} פרויקטים · {len(df_master):,} תנועות במאסטר'
+    _meta = f'{_now} · {len(projects)} פרויקטים · {len(df_master):,} תנועות{_last_build_txt}'
     _status, _status_txt = "ok", "המערכת תקינה"
 else:
     _meta = f'{_now} · {len(projects)} פרויקטים · אין דאטה'

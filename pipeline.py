@@ -18,6 +18,7 @@ from core import (
     anomaly_detector,
     categorizer,
     chashbashevet_loader,
+    fuel_inventory,
     hours_loader,
     solar_loader,
 )
@@ -156,6 +157,15 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
         hours_loader.load_hours(hours_path)
         if hours_path
         else pd.DataFrame(columns=hours_loader.OUTPUT_COLS)
+    )
+
+    # מאזן מלאי סולר (אופציונלי)
+    inv_path = _find_file(month_dir, ["fuel_inventory", "מלאי סולר", "מלאי"],
+                          "fuel_inventory.xlsx")
+    out["fuel_inventory"] = (
+        fuel_inventory.load_fuel_inventory(inv_path)
+        if inv_path
+        else pd.DataFrame(columns=fuel_inventory.OUTPUT_COLS)
     )
 
     logger.info(
@@ -343,6 +353,20 @@ def build_master() -> pd.DataFrame:
         logger.info("Saved master with %d rows to %s", len(master), MASTER_PARQUET)
     except Exception as e:
         logger.exception("Failed to save master parquet: %s", e)
+
+    # Mirror to SQLite (audit + queryable). Parquet stays primary for now;
+    # SQLite is additive — failures here don't break the pipeline.
+    try:
+        from core import db
+        n_db = db.upsert_master(master)
+        db.log_event("build_master", {
+            "rows": len(master),
+            "projects": int(master["project_id"].nunique()) if not master.empty else 0,
+            "months": int(master["month"].nunique()) if not master.empty else 0,
+        })
+        logger.info("Mirrored %d rows to SQLite", n_db)
+    except Exception as e:
+        logger.exception("SQLite mirror failed (non-fatal): %s", e)
 
     return master
 

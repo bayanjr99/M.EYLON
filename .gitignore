@@ -5,6 +5,12 @@ data/projects/*/
 # Repo MUST stay private — contains financial data.
 # data/master.parquet  ← intentionally tracked
 
+# SQLite audit log — local-only working state, rebuilt on each build_master.
+data/audit.sqlite3
+data/audit.sqlite3-journal
+data/audit.sqlite3-wal
+data/audit.sqlite3-shm
+
 # Outputs
 output/
 logs/
