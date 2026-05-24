@@ -52,20 +52,32 @@ st.html(MAIN_CSS)
 
 
 # ═══ DATA LOAD ══════════════════════════════════════════════
-@st.cache_data(show_spinner=False, ttl=300)
-def _load_master() -> pd.DataFrame:
-    """טוען master.parquet. ממוטמן ל-5 דקות."""
+import os
+
+
+def _file_mtime(path: str) -> float:
+    """Returns file modification time, 0 if missing.
+
+    Used as cache key so the cache invalidates the instant the file
+    changes — no more stale view after a fresh build_master().
+    """
+    return os.path.getmtime(path) if os.path.exists(path) else 0.0
+
+
+@st.cache_data(show_spinner=False)
+def _load_master(_mtime: float) -> pd.DataFrame:
+    """טוען master.parquet. הקאש מתאפס אוטומטית כשהקובץ משתנה."""
     return pipeline.load_master()
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def _load_projects() -> list[dict]:
-    """טוען רשימת פרויקטים מ-projects_registry.xlsx."""
+@st.cache_data(show_spinner=False)
+def _load_projects(_mtime: float) -> list[dict]:
+    """טוען רשימת פרויקטים. הקאש מתאפס כשהקובץ משתנה."""
     return pipeline.list_available_projects()
 
 
-df_master = _load_master()
-projects = _load_projects()
+df_master = _load_master(_file_mtime("data/master.parquet"))
+projects = _load_projects(_file_mtime("data/projects_registry.xlsx"))
 has_data = not df_master.empty
 
 
