@@ -133,6 +133,7 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         "⛽ סולר ואחזקה",
         "🚜 רכבים וכלים",
         "📋 פירוט תנועות",
+        "🔍 בדיקות וחריגות",
     ])
 
     with tabs[0]:
@@ -151,6 +152,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         _tab_vehicles_tools(df)
     with tabs[7]:
         _tab_transactions(df)
+    with tabs[8]:
+        _tab_qa(df, project_meta)
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
@@ -591,6 +594,130 @@ def _tab_transactions(df: pd.DataFrame) -> None:
         st.caption(f"{len(disp):,} תנועות תואמות")
 
     st.dataframe(disp, use_container_width=True, hide_index=True)
+
+
+# ─── Tab 9: בדיקות וחריגות (QA) ─────────────────────────────
+def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
+    """דוחות איכות נתונים - מה חסר/חשוד/לא מסווג."""
+    from core import categorizer
+    from pipeline import list_available_months, PROJECTS_ROOT
+
+    chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df
+    solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
+    hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
+
+    # ── סיכום מצב נתונים ──
+    sec("מצב טעינת נתונים")
+    project_id = project_meta["project_id"]
+    months = list_available_months(project_id)
+    rows = []
+    for m in months:
+        month_dir = PROJECTS_ROOT / project_id / m
+        files = {f.name for f in month_dir.iterdir() if f.is_file()
+                 and f.suffix.lower() in (".xlsx", ".xls") and not f.name.startswith("~$")}
+        has_chash = any("כרטיס" in f or "chashbashevet" in f.lower() for f in files)
+        has_solar = any("סולר" in f or "solar" in f.lower() or "תדלוק" in f for f in files)
+        has_hours = any("שעות" in f or "hours" in f.lower() for f in files)
+        has_bal = any("מאזן" in f or "balance" in f.lower() for f in files)
+        chash_n = int(len(chash[chash["month"] == m])) if not chash.empty else 0
+        rows.append({
+            "חודש": m,
+            "כרטיס הנהלה": "✓" if has_chash else "✗",
+            "מאזן": "✓" if has_bal else "✗",
+            "סולר": "✓" if has_solar else "✗",
+            "שעות": "✓" if has_hours else "✗",
+            "תנועות נטענו": chash_n,
+        })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("אין חודשים בתיקיית הפרויקט.")
+
+    # ── 1. תנועות שנפלו לקטגוריות fallback (אחר/הוצאות תפעוליות וכו') ──
+    sec("חשבונות לא מקוטלגים (נפלו ל-fallback)")
+    unmapped = categorizer.report_unmapped(chash)
+    if unmapped.empty:
+        ins("green", "✓", "כל החשבונות מקוטלגים", "אין שום חשבון בקטגוריית fallback.")
+    else:
+        st.caption(f"{len(unmapped)} חשבונות. עדכן את category_mapping.xlsx כדי לסווג אותם נכון.")
+        st.dataframe(unmapped, use_container_width=True, hide_index=True)
+        from io import BytesIO
+        buf = BytesIO()
+        unmapped.to_excel(buf, index=False, engine="openpyxl")
+        st.download_button("⬇️ הורד unmapped_accounts.xlsx",
+                           data=buf.getvalue(),
+                           file_name="unmapped_accounts.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # ── 2. תנועות עם ספק ריק / חשוד ──
+    sec("תנועות ללא ספק / פרטים ריקים")
+    if "supplier" in chash.columns and not chash.empty:
+        empty_sup = chash[
+            (chash["supplier"].fillna("").astype(str).str.strip() == "") &
+            (chash["amount"].abs() > 1000)
+        ]
+        if empty_sup.empty:
+            ins("green", "✓", "אין", "כל החיובים המשמעותיים כוללים שם ספק.")
+        else:
+            st.caption(f"{len(empty_sup)} תנועות מעל ₪1000 ללא ספק זוהה.")
+            cols = [c for c in ["date", "account_num", "account_name",
+                                "description", "amount"] if c in empty_sup.columns]
+            st.dataframe(empty_sup[cols], use_container_width=True, hide_index=True)
+
+    # ── 3. כפילויות חשודות (אותו ספק, סכום, חודש) ──
+    sec("כפילויות חשודות")
+    if not chash.empty and "supplier" in chash.columns:
+        dup_groups = chash[chash["supplier"].fillna("") != ""].groupby(
+            ["supplier", "amount", "month"], dropna=False
+        ).size().reset_index(name="כפילויות")
+        dup_groups = dup_groups[dup_groups["כפילויות"] > 1].sort_values("כפילויות", ascending=False)
+        if dup_groups.empty:
+            ins("green", "✓", "אין כפילויות", "לא נמצאו שילובים (ספק+סכום+חודש) שמופיעים יותר מפעם אחת.")
+        else:
+            st.caption(f"{len(dup_groups)} שילובי (ספק, סכום, חודש) חוזרים. בדוק אם זה כפילות אמיתית או חיובים נפרדים.")
+            disp = dup_groups.copy()
+            disp.columns = ["ספק", "סכום (₪)", "חודש", "כפילויות"]
+            disp["סכום (₪)"] = disp["סכום (₪)"].round(0)
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── 4. סולר ללא כלי / כלים ללא שעות ──
+    sec("חוסרי שיוך - סולר ושעות")
+    cA, cB = st.columns(2)
+    with cA:
+        st.markdown("**תדלוקים בלי license_num**")
+        if solar.empty:
+            st.caption("אין נתוני סולר בכלל.")
+        else:
+            orphan_fuel = solar[solar["license_num"].isna()]
+            if orphan_fuel.empty:
+                ins("green", "✓", "אין", "כל התדלוקים שויכו לכלי.")
+            else:
+                st.dataframe(orphan_fuel[["date", "tool_name", "liters"]],
+                             use_container_width=True, hide_index=True)
+    with cB:
+        st.markdown("**שעות עבודה בלי license_num**")
+        if hours.empty:
+            st.caption("אין נתוני שעות בכלל.")
+        else:
+            orphan_hrs = hours[hours["license_num"].isna()]
+            if orphan_hrs.empty:
+                ins("green", "✓", "אין", "כל השעות שויכו לכלי.")
+            else:
+                st.dataframe(orphan_hrs[["date", "tool_name", "work_hours"]],
+                             use_container_width=True, hide_index=True)
+
+    # ── 5. הכנסות לא מסווגות ──
+    sec("הכנסות ללא קטגוריה מפורשת")
+    income = df[df["amount"] < 0] if "amount" in df.columns else df.iloc[0:0]
+    unclassified_income = income[income["category"].isin([
+        "אחר", "הוצאות תפעוליות", "הוצאות פרויקט", "הוצאות שכר/כלליות"
+    ])] if "category" in income.columns else income.iloc[0:0]
+    if unclassified_income.empty:
+        ins("green", "✓", "כל ההכנסות מסווגות", "")
+    else:
+        cols = [c for c in ["date", "account_num", "account_name", "supplier",
+                            "description", "amount"] if c in unclassified_income.columns]
+        st.dataframe(unclassified_income[cols], use_container_width=True, hide_index=True)
 
 
 # ─── תרגום תוויות קטגוריה ─────────────────────────────────
