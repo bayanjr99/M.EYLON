@@ -177,32 +177,35 @@ def _render_tools_management() -> None:
     with st.form("add_tool_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            new_lic = st.number_input("מספר רישוי *", min_value=1, step=1, value=None,
-                                       placeholder="לדוגמה: 168792")
+            new_lic_str = st.text_input("מספר רישוי *", help="לדוגמה: 168792")
         with c2:
-            new_name = st.text_input("שם / דגם *", placeholder="לדוגמה: שופל קטרפילר 966M")
+            new_name = st.text_input("שם / דגם *", help="לדוגמה: שופל קטרפילר 966M")
         with c3:
-            new_type = st.text_input("סוג כלי", placeholder="לדוגמה: שופל גדול")
+            new_type = st.text_input("סוג כלי", help="לדוגמה: שופל גדול")
         c4, c5, c6 = st.columns(3)
         with c4:
-            new_owner = st.text_input("בעלים", placeholder="בעלים אילון / אבו גאנם")
+            new_owner = st.text_input("בעלים", help="בעלים אילון / אבו גאנם / וכו'")
         with c5:
-            new_nl = st.number_input("תקן תחתון (ל'/ש')", min_value=0.0, step=0.5,
-                                      value=None, placeholder="לדוגמה: 15")
+            new_nl = st.number_input("תקן תחתון (ל'/ש') - 0 אם לא ידוע",
+                                      min_value=0.0, step=0.5, value=0.0)
         with c6:
-            new_nh = st.number_input("תקן עליון (ל'/ש')", min_value=0.0, step=0.5,
-                                      value=None, placeholder="לדוגמה: 22")
-        new_notes = st.text_input("הערות", placeholder="אופציונלי")
+            new_nh = st.number_input("תקן עליון (ל'/ש') - 0 אם לא ידוע",
+                                      min_value=0.0, step=0.5, value=0.0)
+        new_notes = st.text_input("הערות")
         submitted = st.form_submit_button("➕ הוסף כלי", type="primary",
                                            use_container_width=True)
         if submitted:
+            try:
+                lic_int = int((new_lic_str or "").strip())
+            except (TypeError, ValueError):
+                lic_int = 0
             ok, msg = control_db.add_tool(
-                license_num=int(new_lic) if new_lic else 0,
+                license_num=lic_int,
                 tool_name=new_name or "",
                 tool_type=new_type or "",
                 owner=new_owner or "",
-                norm_low=float(new_nl) if new_nl else None,
-                norm_high=float(new_nh) if new_nh else None,
+                norm_low=float(new_nl) if new_nl > 0 else None,
+                norm_high=float(new_nh) if new_nh > 0 else None,
                 notes=new_notes or "",
             )
             if ok:
@@ -231,18 +234,22 @@ def _render_tools_management() -> None:
         # Delete by license_num
         c_d1, c_d2 = st.columns([1, 3])
         with c_d1:
-            del_lic = st.number_input("מחק לפי רישוי", min_value=1, step=1,
-                                       value=None, key="del_tool_lic")
+            del_lic_str = st.text_input("מחק לפי רישוי", key="del_tool_lic",
+                                          placeholder="לדוגמה: 168792")
         with c_d2:
             st.markdown("&nbsp;", unsafe_allow_html=True)
+            try:
+                del_lic_int = int((del_lic_str or "").strip()) if del_lic_str else 0
+            except (TypeError, ValueError):
+                del_lic_int = 0
             if st.button("🗑 מחק כלי", key="del_tool_btn",
-                         disabled=not del_lic, type="secondary"):
-                if control_db.delete_tool_by_license(int(del_lic)):
-                    st.success(f"כלי {del_lic} נמחק")
+                         disabled=del_lic_int <= 0, type="secondary"):
+                if control_db.delete_tool_by_license(del_lic_int):
+                    st.success(f"כלי {del_lic_int} נמחק")
                     st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.error(f"כלי {del_lic} לא נמצא ב-SQLite (ייתכן שהוא ב-xlsx בלבד)")
+                    st.error(f"כלי {del_lic_int} לא נמצא ב-SQLite (ייתכן שהוא ב-xlsx בלבד)")
 
     # ── מוצג גם: tools מ-xlsx (לקריאה בלבד) ──
     from pipeline import _load_tools_registry, TOOLS_REGISTRY
