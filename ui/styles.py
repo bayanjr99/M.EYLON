@@ -367,5 +367,195 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
   border:1px solid var(--status-warn-border);}
 .status-pill.crit{background:var(--status-bad-soft);color:var(--status-bad);
   border:1px solid var(--status-bad-border);}
+
+/* ═══════════════════════════════════════════════════════════════════
+   POLISH LAYER - מעובד מ-app_gpt_dashboard.py של billing_system.
+   שכבת עידונים אדיטיבית; לא לגעת בכללים מעל. כל המחלקות החדשות
+   זמינות לשימוש ב-app.py דרך st.markdown(..., unsafe_allow_html=True).
+   ══════════════════════════════════════════════════════════════════ */
+
+/* --- Tabs as polished pill navigation -------------------------- */
+[data-baseweb="tab-list"]{
+  background:#FFFFFF!important;border:1px solid var(--line)!important;
+  border-radius:14px!important;padding:6px!important;gap:4px!important;
+  box-shadow:0 1px 4px rgba(15,23,42,.04);margin-bottom:14px!important;
+  overflow:visible!important;}
+[data-baseweb="tab-list"] button[data-baseweb="tab"]{
+  background:transparent!important;border-radius:10px!important;
+  font-weight:700!important;font-size:13px!important;
+  color:var(--ink-mid)!important;
+  padding:9px 16px!important;height:auto!important;
+  transition:background .15s,color .15s,box-shadow .15s!important;
+  border:none!important;}
+[data-baseweb="tab-list"] button[data-baseweb="tab"]:hover{
+  background:var(--brand-primary-soft)!important;color:var(--brand-primary-dark)!important;}
+[data-baseweb="tab-list"] button[data-baseweb="tab"][aria-selected="true"]{
+  background:linear-gradient(135deg,#7C2D12 0%,#D97706 100%)!important;
+  color:#FFFFFF!important;
+  box-shadow:0 3px 10px rgba(217,119,6,.32)!important;}
+[data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
+[data-baseweb="tab-list"] [data-baseweb="tab-border"]{display:none!important;}
+
+/* nested tabs (sub-tabs) — slightly smaller pills */
+[data-baseweb="tab-panel"] [data-baseweb="tab-list"]{
+  padding:5px!important;background:#FAFBFD!important;}
+[data-baseweb="tab-panel"] [data-baseweb="tab-list"] button[data-baseweb="tab"]{
+  font-size:12px!important;padding:7px 14px!important;}
+
+/* --- Tables: sticky header + frozen first column + better hover ----- */
+[data-testid="stDataFrame"] [data-testid="StyledDataFrameDataCell"]{
+  font-variant-numeric:tabular-nums;}
+[data-testid="stDataFrame"]{max-height:60vh!important;}
+[data-testid="stDataFrame"] thead th{
+  position:sticky!important;top:0!important;z-index:5!important;
+  background:#F1F5F9!important;
+  box-shadow:inset 0 -2px 0 #CBD5E1;}
+[data-testid="stDataFrame"] tbody td:first-child,
+[data-testid="stDataFrame"] thead th:first-child{
+  position:sticky!important;right:0!important;z-index:4!important;
+  background:#F8FAFC!important;
+  box-shadow:-2px 0 0 #E2E8F0;}
+[data-testid="stDataFrame"] thead th:first-child{z-index:6!important;}
+[data-testid="stDataFrame"] tr:hover td:last-child{
+  box-shadow:inset -3px 0 0 var(--brand-primary);}
+
+/* --- CSV download buttons under tables: clearer affordance --------- */
+.stDownloadButton button{
+  border:1px solid var(--brand-primary)!important;
+  color:var(--brand-primary-dark)!important;background:#fff!important;
+  font-weight:700!important;}
+.stDownloadButton button:hover{
+  background:var(--brand-primary-soft)!important;
+  box-shadow:0 3px 10px rgba(217,119,6,.18)!important;}
+
+/* --- Section card: clean wrapper for in-tab content blocks --------- */
+.section-card{background:#FFFFFF;border:1px solid var(--line);
+  border-radius:14px;padding:18px 20px;margin-bottom:14px;
+  box-shadow:0 1px 4px rgba(15,23,42,.04);}
+.section-card-title{font-size:13px;font-weight:800;color:var(--ink-strong);
+  margin-bottom:12px;display:flex;align-items:center;gap:8px;
+  padding-bottom:10px;border-bottom:1px solid var(--line-faint);}
+.section-card-title i.ti{font-size:18px;color:var(--brand-primary);}
+.section-card-title .badge{margin-right:auto;font-size:11px;font-weight:700;
+  background:var(--brand-primary-soft);color:var(--brand-primary-dark);
+  border:1px solid var(--brand-primary-mid);padding:2px 9px;border-radius:99px;}
+
+/* --- Focus alert: prominent strip for critical signals ------------- */
+.focus{padding:13px 18px;border-radius:10px;font-size:13.5px;font-weight:700;
+  margin-bottom:16px;border:1px solid;border-right-width:4px;
+  box-shadow:0 1px 4px rgba(0,0,0,.06);}
+.focus.red{background:var(--status-bad-soft);border-color:var(--status-bad-border);
+  border-right-color:var(--status-bad);color:#7F1D1D;}
+.focus.amber{background:var(--status-warn-soft);border-color:var(--status-warn-border);
+  border-right-color:var(--status-warn);color:#78350F;}
+.focus.green{background:var(--status-good-soft);border-color:var(--status-good-border);
+  border-right-color:var(--status-good);color:#14532D;}
+.focus.blue{background:var(--status-info-soft);border-color:var(--status-info-border);
+  border-right-color:var(--status-info);color:#1E3A8A;}
+
+/* --- Executive insight card: problem · impact · who · action · priority */
+.exec-insight{background:#fff;border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;margin-bottom:10px;display:grid;
+  grid-template-columns:auto 1fr auto;gap:10px 16px;align-items:start;
+  box-shadow:0 1px 3px rgba(15,23,42,.04);
+  border-right:4px solid var(--ink-faint);transition:box-shadow .15s,transform .15s;}
+.exec-insight:hover{box-shadow:0 6px 16px rgba(15,23,42,.10);transform:translateY(-1px);}
+.exec-insight[data-priority="high"]{border-right-color:var(--status-bad);}
+.exec-insight[data-priority="med"]{border-right-color:var(--status-warn);}
+.exec-insight[data-priority="low"]{border-right-color:var(--status-good);}
+.exec-insight-icon{font-size:22px;line-height:1;padding-top:2px;}
+.exec-insight-body{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.exec-insight-problem{font-size:13.5px;font-weight:800;color:var(--ink-strong);
+  line-height:1.4;}
+.exec-insight-meta{display:flex;flex-wrap:wrap;gap:6px 10px;font-size:11px;
+  color:var(--ink-mid);align-items:center;}
+.exec-insight-tag{display:inline-flex;align-items:center;gap:4px;
+  padding:3px 9px;border-radius:99px;background:#F8FAFC;
+  border:1px solid var(--line);font-weight:600;font-size:11px;color:var(--ink-mid);}
+.exec-insight-tag.impact{background:var(--status-bad);
+  border-color:var(--status-bad);color:#fff;font-variant-numeric:tabular-nums;}
+.exec-insight-tag.impact.positive{background:var(--status-good);
+  border-color:var(--status-good);color:#fff;}
+.exec-insight-tag.who{background:var(--brand-primary-soft);
+  border-color:var(--brand-primary-mid);color:var(--brand-primary-dark);}
+.exec-insight-action{font-size:12px;color:var(--ink-mid);
+  background:var(--bg-page);border-radius:8px;padding:7px 10px;
+  border-right:2px solid var(--brand-primary);line-height:1.5;}
+.exec-insight-action b{color:var(--brand-primary-dark);}
+.exec-priority-pill{display:inline-flex;align-items:center;gap:5px;
+  padding:5px 11px;border-radius:99px;font-size:10.5px;font-weight:800;
+  text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;
+  align-self:start;margin-top:2px;}
+.exec-priority-pill[data-priority="high"]{background:var(--status-bad-soft);
+  color:var(--status-bad);border:1px solid var(--status-bad-border);}
+.exec-priority-pill[data-priority="med"]{background:var(--status-warn-soft);
+  color:var(--status-warn);border:1px solid var(--status-warn-border);}
+.exec-priority-pill[data-priority="low"]{background:var(--status-good-soft);
+  color:var(--status-good);border:1px solid var(--status-good-border);}
+
+/* --- Executive banner (for conclusions / summary tabs) ------------- */
+.exec-banner{background:linear-gradient(135deg,#7C2D12 0%,#D97706 50%,#FBBF24 100%);
+  color:#fff;border-radius:14px;padding:18px 22px;margin-bottom:16px;
+  box-shadow:0 8px 24px rgba(217,119,6,.22);display:flex;
+  align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;}
+.exec-banner-title{font-size:15px;font-weight:800;letter-spacing:.2px;
+  display:flex;align-items:center;gap:9px;}
+.exec-banner-title i.ti{font-size:22px;opacity:.95;}
+.exec-banner-sub{font-size:11px;opacity:.85;font-weight:500;
+  margin-top:3px;letter-spacing:.3px;}
+.exec-banner-stats{display:flex;gap:18px;align-items:center;}
+.exec-stat{text-align:right;}
+.exec-stat-val{font-size:18px;font-weight:800;line-height:1.1;
+  font-variant-numeric:tabular-nums;}
+.exec-stat-lbl{font-size:10px;opacity:.8;letter-spacing:.6px;
+  text-transform:uppercase;margin-top:2px;}
+
+/* --- Period header (top of any tab: date range + scope counts) ----- */
+.period-header{background:linear-gradient(135deg,#F8FAFC,#F1F5F9);
+  border:1px solid #E2E8F0;border-radius:10px;padding:10px 16px;
+  margin:0 0 14px;display:flex;justify-content:space-between;
+  align-items:center;font-size:13px;color:#475569;}
+.period-header b{color:#0F172A;}
+.period-header .sep{opacity:.5;margin:0 6px;}
+.period-header .tag{font-size:11px;opacity:.6;letter-spacing:.05em;}
+
+/* --- Non-primary buttons: subtle base hover with brand tint -------- */
+.stButton > button{transition:all .15s;border-radius:10px!important;
+  font-weight:700!important;}
+.stButton > button:hover{box-shadow:0 3px 10px rgba(217,119,6,.18);
+  border-color:var(--brand-primary)!important;}
+
+/* --- Caption: tighter, gentler ------------------------------------- */
+.stCaption{font-size:11.5px!important;color:var(--ink-soft)!important;}
+
+/* --- Selectbox / multiselect: brand focus ring -------------------- */
+[data-baseweb="select"]:focus-within > div{
+  border-color:var(--brand-primary)!important;
+  box-shadow:0 0 0 2px rgba(217,119,6,.18)!important;}
+
+/* --- KPI cells: hover chip-row reveal (drill on hover) ------------- */
+.kpi-cell .kpi-chip-row + .kpi-chip-row{
+  max-height:0;opacity:0;overflow:hidden;margin-top:0;padding:0;
+  transition:max-height .25s ease,opacity .2s ease,margin-top .25s,padding .25s;}
+.kpi-cell:hover .kpi-chip-row + .kpi-chip-row{
+  max-height:60px;opacity:1;margin-top:4px;}
+.kpi-cell:has(.kpi-chip-row + .kpi-chip-row) .kpi-chip-row:first-of-type::after{
+  content:"…";color:#94A3B8;font-weight:700;font-size:11px;
+  margin-right:auto;padding:0 4px;align-self:center;}
+
+/* --- Section breathing room: gentler gaps between vertical blocks --- */
+.block-container > div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"]{
+  gap:14px;}
+
+/* --- Plotly chart inner-padding ------------------------------- */
+[data-testid="stPlotlyChart"] + .stCaption,
+[data-testid="stPlotlyChart"] + div .stCaption{
+  font-size:11px!important;color:var(--ink-soft)!important;
+  font-style:italic;margin-top:-2px!important;margin-bottom:10px!important;
+  padding:0 4px;line-height:1.5;}
+
+/* --- Expander dataframe: drop inner border to avoid double-border --- */
+[data-testid="stExpander"] [data-testid="stDataFrame"]{
+  border:none!important;border-radius:8px!important;}
 </style>
 """
