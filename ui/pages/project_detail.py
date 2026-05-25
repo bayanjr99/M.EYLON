@@ -195,13 +195,15 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         _tab_overview(df, summary)
 
     with tabs[1]:
-        # כספים: 3 sub-tabs
-        sub = st.tabs(["הכנסות", "הוצאות", "פירוט תנועות"])
+        # כספים: 4 sub-tabs
+        sub = st.tabs(["הכנסות", "הוצאות", "ספקים", "פירוט תנועות"])
         with sub[0]:
             _tab_income(df)
         with sub[1]:
             _tab_expenses(df)
         with sub[2]:
+            _subtab_suppliers_finance(df, project_meta)
+        with sub[3]:
             _tab_transactions(df)
 
     with tabs[2]:
@@ -1428,6 +1430,84 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         st.dataframe(fuel_agg.sort_values("סכום נטו (₪)", ascending=False),
                      use_container_width=True, hide_index=True)
 
+    # ════════════════════════════════════════════════════════
+    # בדיקות ספקים (לפי הספק החדש בטאב כספים)
+    # ════════════════════════════════════════════════════════
+    expenses = chash[chash["account_type"] == "expense"] if "account_type" in chash.columns \
+        else chash[chash["amount"] > 0]
+
+    # ── 11. ספק לא מזוהה ──
+    sec("ספק לא מזוהה - תנועות הוצאה בלי שם ספק")
+    from core.chashbashevet_loader import SALARY_ACCOUNTS
+    no_sup = expenses[
+        (expenses["supplier"].fillna("").astype(str).str.strip() == "") &
+        (~expenses["account_num"].isin(SALARY_ACCOUNTS))  # שכר עם supplier ריק זה תקין
+    ]
+    if no_sup.empty:
+        ins("green", "✓", "אין הוצאות חסרות ספק", "")
+    else:
+        st.caption(f"{len(no_sup)} תנועות הוצאה ללא ספק (לא שכר). סה\"כ ₪{no_sup['net_amount'].sum():,.0f}.")
+        cols = [c for c in ["date", "account_num", "account_name",
+                            "description", "net_amount"] if c in no_sup.columns]
+        st.dataframe(no_sup[cols], use_container_width=True, hide_index=True)
+
+    # ── 12. שכר שזוהה בטעות כספק ──
+    sec("שכר שזוהה בטעות כספק", meta="ספק שמכיל 'שכ\"ע' או דפוס תאריך פנימי")
+    import re as _re
+    bad_sal = expenses[
+        expenses["supplier"].fillna("").astype(str).str.match(r"^שכ[\"']?ע?\s*\d", na=False)
+    ]
+    if bad_sal.empty:
+        ins("green", "✓", "אין שכר שזוהה כספק", "")
+    else:
+        st.caption(f"{len(bad_sal)} תנועות שכר מזוהות בטעות כספק.")
+        cols = [c for c in ["date", "account_num", "supplier", "description",
+                            "net_amount"] if c in bad_sal.columns]
+        st.dataframe(bad_sal[cols], use_container_width=True, hide_index=True)
+
+    # ── 13. ספק שמופיע בכמה קטגוריות ──
+    sec("ספק שמופיע ביותר מקטגוריה אחת")
+    if not expenses.empty and "main_category" in expenses.columns:
+        valid_sup = expenses[expenses["supplier"].fillna("") != ""]
+        multi_cat = valid_sup.groupby("supplier")["main_category"].nunique().reset_index()
+        multi_cat = multi_cat[multi_cat["main_category"] > 1].rename(
+            columns={"main_category": "n_categories"}
+        )
+        if multi_cat.empty:
+            ins("green", "✓", "כל ספק שייך לקטגוריה אחת בלבד", "")
+        else:
+            # join with category list per supplier
+            cats_per = valid_sup.groupby("supplier")["main_category"].apply(
+                lambda s: ", ".join(sorted(s.unique()))
+            ).reset_index().rename(columns={"main_category": "categories"})
+            joined = multi_cat.merge(cats_per, on="supplier")
+            joined.columns = ["ספק", "מס' קטגוריות", "קטגוריות"]
+            st.caption(f"{len(joined)} ספקים מופיעים ביותר מקטגוריה אחת - לבדוק אם זה נכון.")
+            st.dataframe(joined.sort_values("מס' קטגוריות", ascending=False),
+                         use_container_width=True, hide_index=True)
+
+    # ── 14. ספקים עם סכומים חריגים (top 5 outliers ביחס לחציון) ──
+    sec("ספקים עם סכומים חריגים", meta="חריגות סטטיסטיות (z-score > 3)")
+    if not expenses.empty:
+        sup_sums = expenses[expenses["supplier"].fillna("") != ""].groupby(
+            "supplier")["net_amount"].sum()
+        if len(sup_sums) >= 3:
+            med = sup_sums.median()
+            std = sup_sums.std()
+            if std and std > 0:
+                z = (sup_sums - med) / std
+                outliers = sup_sums[z.abs() > 3]
+                if outliers.empty:
+                    ins("green", "✓", "אין ספקים חריגים סטטיסטית", "")
+                else:
+                    rows = pd.DataFrame({
+                        "ספק": outliers.index,
+                        "סכום (₪)": outliers.values.round(0),
+                        "מעל החציון ב-": ((outliers / med - 1) * 100).round(0).values,
+                    })
+                    st.caption(f"{len(outliers)} ספקים חריגים (החציון: ₪{med:,.0f}).")
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
+
 
 # ════════════════════════════════════════════════════════════
 # SUB-TABS חדשים למבנה המקצועי (8 ראשיים)
@@ -1511,6 +1591,259 @@ def _subtab_accounts_rollup(df: pd.DataFrame, project_meta: dict | None = None) 
 # constant used inside _subtab_accounts_rollup
 balance_OUTPUT_COLS = ["sort_key", "account_num", "account_name",
                        "debit", "credit", "balance", "group"]
+
+
+# ─── כספים → ספקים (פירוט הוצאות לפי ספק) ──────────────────
+def _normalize_supplier(supplier: str, account_num: int | None,
+                         account_name: str = "") -> str:
+    """שיוך supplier לטקסט תצוגה.
+
+    - שכר ללא ספק → "שכר עובדים"
+    - ריק/None → "לא זוהה"
+    - אחר → השם כפי שהוא.
+    """
+    from core.chashbashevet_loader import SALARY_ACCOUNTS
+    s = (supplier or "").strip()
+    if s:
+        return s
+    if account_num in SALARY_ACCOUNTS:
+        return "שכר עובדים"
+    return "לא זוהה"
+
+
+def _supplier_group(sub_cat: str, main_cat: str) -> str:
+    """קבוצת ספקים לתצוגה מקובצת."""
+    SUPPLIER_GROUPS = {
+        "סולר צמ\"ה": "ספקי סולר צמ\"ה",
+        "סולר רכבים": "ספקי סולר רכבים",
+        "בנזין רכבים": "ספקי בנזין",
+        "טעינת חשמל רכבים": "ספקי חשמל רכבים",
+        "דלק לא מסווג": "ספקי דלק לא מסווג",
+    }
+    if sub_cat in SUPPLIER_GROUPS:
+        return SUPPLIER_GROUPS[sub_cat]
+    if main_cat == "קבלני משנה":
+        return "קבלני משנה"
+    if main_cat == "אחזקת כלים":
+        return "מוסכים / אחזקה"
+    if main_cat == "חומרים":
+        return "ספקי חומרים"
+    if main_cat == "פינוי פסולת":
+        return "פינוי פסולת"
+    if main_cat == "שכר עבודה":
+        return "שכר עובדים"
+    return "אחר"
+
+
+def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
+    """תת-טאב ספקים בתוך כספים. הוצאות בלבד."""
+    # ── סינון בסיסי: רק תנועות הוצאה מחשבשבת ──
+    if "source" in df.columns:
+        chash = df[df["source"] == "chashbashevet"]
+    else:
+        chash = df
+    if chash.empty:
+        ins("blue", "ℹ️", "אין נתוני חשבשבת", "טען כרטיס הנהלה.")
+        return
+
+    # אם יש account_type, השתמש; אחרת fallback ל-amount > 0
+    if "account_type" in chash.columns:
+        exp = chash[chash["account_type"] == "expense"].copy()
+    else:
+        exp = chash[chash["amount"] > 0].copy()
+    if exp.empty:
+        ins("blue", "ℹ️", "אין תנועות הוצאה", "")
+        return
+
+    # נרמול ספקים: שכר → "שכר עובדים", ריק → "לא זוהה"
+    exp["supplier_display"] = exp.apply(
+        lambda r: _normalize_supplier(
+            r.get("supplier"), r.get("account_num"), r.get("account_name", "")
+        ),
+        axis=1,
+    )
+    # net_amount fallback
+    if "net_amount" not in exp.columns:
+        exp["net_amount"] = exp["debit"] - exp["credit"] if "debit" in exp.columns else exp["amount"]
+    # main_category / sub_category fallback
+    if "main_category" not in exp.columns:
+        exp["main_category"] = exp.get("category", "")
+    if "sub_category" not in exp.columns:
+        exp["sub_category"] = exp.get("subcategory", "")
+
+    total_exp = float(exp["net_amount"].sum())
+
+    # ── פילטרים ──
+    sec("פילטרים")
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        months = ["כל החודשים"] + sorted(exp["month"].dropna().unique().tolist())
+        month_pick = st.selectbox("חודש", months, key=f"sup_month_{project_meta['project_id']}")
+    with f2:
+        cats = ["כל הקטגוריות"] + sorted(exp["main_category"].dropna().unique().tolist())
+        cat_pick = st.selectbox("קטגוריה", cats, key=f"sup_cat_{project_meta['project_id']}")
+    with f3:
+        if cat_pick == "כל הקטגוריות":
+            sub_options = sorted(exp["sub_category"].dropna().unique().tolist())
+        else:
+            sub_options = sorted(exp[exp["main_category"] == cat_pick]
+                                  ["sub_category"].dropna().unique().tolist())
+        sub_pick = st.selectbox("תת-קטגוריה", ["הכל"] + sub_options,
+                                 key=f"sup_sub_{project_meta['project_id']}")
+    with f4:
+        search = st.text_input("חיפוש ספק / פרטים",
+                                key=f"sup_search_{project_meta['project_id']}",
+                                placeholder="🔍").strip()
+
+    f5, f6 = st.columns(2)
+    with f5:
+        min_amt = st.number_input("סכום מינימום (₪)", min_value=0.0, step=1000.0,
+                                    value=0.0, key=f"sup_min_{project_meta['project_id']}")
+    with f6:
+        max_amt = st.number_input("סכום מקסימום (₪, 0 = ללא הגבלה)", min_value=0.0,
+                                    step=10000.0, value=0.0,
+                                    key=f"sup_max_{project_meta['project_id']}")
+
+    # Apply filters
+    filtered = exp.copy()
+    if month_pick != "כל החודשים":
+        filtered = filtered[filtered["month"] == month_pick]
+    if cat_pick != "כל הקטגוריות":
+        filtered = filtered[filtered["main_category"] == cat_pick]
+    if sub_pick != "הכל":
+        filtered = filtered[filtered["sub_category"] == sub_pick]
+    if search:
+        sl = search.lower()
+        mask = (filtered["supplier_display"].astype(str).str.lower().str.contains(sl, na=False) |
+                filtered["description"].astype(str).str.lower().str.contains(sl, na=False))
+        filtered = filtered[mask]
+
+    if filtered.empty:
+        st.caption("אין תנועות תואמות לפילטרים.")
+        return
+
+    # ── אגרגציה לפי ספק ──
+    agg = filtered.groupby("supplier_display").agg(
+        sum_debit=("debit", "sum") if "debit" in filtered.columns else ("net_amount", "sum"),
+        sum_credit=("credit", "sum") if "credit" in filtered.columns else ("net_amount", lambda s: 0),
+        net=("net_amount", "sum"),
+        n_tx=("net_amount", "size"),
+        n_months=("month", lambda s: s.nunique()),
+        main_cat=("main_category", lambda s: s.mode().iloc[0] if not s.mode().empty else ""),
+        sub_cat=("sub_category", lambda s: s.mode().iloc[0] if not s.mode().empty else ""),
+    ).reset_index()
+
+    # סכום מינימום/מקסימום
+    if min_amt > 0:
+        agg = agg[agg["net"].abs() >= min_amt]
+    if max_amt > 0:
+        agg = agg[agg["net"].abs() <= max_amt]
+    if agg.empty:
+        st.caption("אין ספקים שעוברים את סף הסכום.")
+        return
+
+    agg["pct_total"] = (agg["net"] / total_exp * 100).round(1)
+    for c in ("sum_debit", "sum_credit", "net"):
+        agg[c] = agg[c].round(0)
+    agg = agg.sort_values("net", ascending=False).reset_index(drop=True)
+
+    # ── KPI Cards ──
+    sec("סיכום ספקים")
+    most_expensive = agg.iloc[0]["supplier_display"] if not agg.empty else "—"
+    biggest_cat = agg.groupby("main_cat")["net"].sum().idxmax() if not agg.empty else "—"
+    total_credits = float(filtered["credit"].sum()) if "credit" in filtered.columns else 0
+    n_unidentified = int((agg["supplier_display"] == "לא זוהה").sum())
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("סה\"כ ספקים", str(len(agg)))
+    k2.metric("הוצאות ספקים", f"₪{agg['net'].sum():,.0f}")
+    k3.metric("ספק הכי יקר", str(most_expensive)[:18],
+              help=f"₪{agg.iloc[0]['net']:,.0f}" if not agg.empty else "")
+    k4.metric("קטגוריה הכי גדולה", str(biggest_cat))
+    k5.metric("סה\"כ זיכויים", f"₪{total_credits:,.0f}")
+
+    if n_unidentified:
+        ins("amber", "⚠️", f"{n_unidentified} ספקים 'לא זוהה'",
+            "תנועות הוצאה ללא שם ספק - בדוק בטאב QA → 'ספק לא מזוהה'.")
+
+    # ── Top 10 ספקים (טבלה) ──
+    sec("Top 10 ספקים", meta="לפי הוצאה נטו")
+    top10 = agg.head(10)[["supplier_display", "main_cat", "net", "pct_total", "n_tx"]].copy()
+    top10.columns = ["ספק", "קטגוריה ראשית", "סה\"כ נטו (₪)", "% מסך", "תנועות"]
+    st.dataframe(top10, use_container_width=True, hide_index=True)
+
+    # ── טבלת ספקים מלאה ──
+    sec(f"כל הספקים ({len(agg)})")
+    full = agg.copy()
+    full.columns = ["ספק", "סה\"כ חובה", "סה\"כ זכות", "הוצאה נטו",
+                    "תנועות", "חודשים", "קטגוריה ראשית", "תת-קטגוריה", "% מסך"]
+    st.dataframe(full, use_container_width=True, hide_index=True)
+
+    # ── הפרדה לפי סוג ספק ──
+    sec("הפרדה לפי סוג ספק")
+    filtered["supplier_group"] = filtered.apply(
+        lambda r: _supplier_group(r.get("sub_category", ""), r.get("main_category", "")),
+        axis=1,
+    )
+    by_grp = filtered.groupby("supplier_group").agg(
+        net=("net_amount", "sum"),
+        n_sup=("supplier_display", "nunique"),
+        n_tx=("net_amount", "size"),
+    ).reset_index().round(0).sort_values("net", ascending=False)
+    by_grp.columns = ["קבוצת ספקים", "סה\"כ (₪)", "ספקים", "תנועות"]
+    st.dataframe(by_grp, use_container_width=True, hide_index=True)
+
+    # ── Drill-down: בחירת ספק לפירוט מלא ──
+    sec("פירוט תנועות לספק", meta="בחר ספק לפירוט מלא + ייצוא לאקסל")
+    sup_pick = st.selectbox(
+        "בחר ספק", ["— בחר —"] + agg["supplier_display"].tolist(),
+        key=f"sup_drill_{project_meta['project_id']}",
+    )
+    if sup_pick and sup_pick != "— בחר —":
+        sup_tx = filtered[filtered["supplier_display"] == sup_pick].copy()
+        sum_debit = float(sup_tx["debit"].sum()) if "debit" in sup_tx.columns else 0
+        sum_credit = float(sup_tx["credit"].sum()) if "credit" in sup_tx.columns else 0
+        sum_net = float(sup_tx["net_amount"].sum())
+        n_months = int(sup_tx["month"].nunique())
+        cA, cB, cC, cD = st.columns(4)
+        cA.metric("חובה", f"₪{sum_debit:,.0f}")
+        cB.metric("זכות (זיכויים)", f"₪{sum_credit:,.0f}")
+        cC.metric("נטו", f"₪{sum_net:,.0f}")
+        cD.metric("חודשים פעילים", str(n_months))
+
+        # טבלת פירוט
+        detail_cols = [c for c in [
+            "date", "month", "account_num", "account_name", "description",
+            "debit", "credit", "net_amount", "main_category", "sub_category",
+            "classification_confidence", "classification_note", "source",
+        ] if c in sup_tx.columns]
+        heb = {
+            "date": "תאריך", "month": "חודש", "account_num": "מס' חשבון",
+            "account_name": "שם חשבון", "description": "פרטים",
+            "debit": "חובה", "credit": "זכות", "net_amount": "הוצאה נטו",
+            "main_category": "קטגוריה ראשית", "sub_category": "תת-קטגוריה",
+            "classification_confidence": "בטחון", "classification_note": "הסבר",
+            "source": "מקור קובץ",
+        }
+        disp = sup_tx[detail_cols].copy().sort_values(
+            "date" if "date" in detail_cols else detail_cols[0])
+        for c in ("debit", "credit", "net_amount"):
+            if c in disp.columns:
+                disp[c] = disp[c].round(0)
+        disp.columns = [heb.get(c, c) for c in detail_cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        # ייצוא אקסל
+        from io import BytesIO
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            disp.to_excel(writer, sheet_name=str(sup_pick)[:31], index=False)
+        st.download_button(
+            f"⬇️ ייצוא {len(disp)} תנועות של '{sup_pick}' לאקסל",
+            data=buf.getvalue(),
+            file_name=f"supplier_{sup_pick[:30]}_{project_meta['project_id']}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 # ─── כספים → גבייה ─────────────────────────────────────────
