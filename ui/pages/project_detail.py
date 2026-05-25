@@ -1047,9 +1047,72 @@ def _collect_fuel_inventory(project_id: str) -> pd.DataFrame:
 # ─── Tab 9: בדיקות וחריגות (QA) ─────────────────────────────
 def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     """דוחות איכות נתונים - מה חסר/חשוד/לא מסווג."""
-    from core import categorizer
+    from core import categorizer, storage
     from pipeline import list_available_months, PROJECTS_ROOT
+    project_id = project_meta["project_id"]
 
+    # ── חריגות בטיפול (persisted) ──
+    sec("חריגות במעקב", meta="מ-data_quality_issues")
+    status_filter = st.radio(
+        "סטטוס", ["פתוחות", "טופלו", "כל הסטטוסים"],
+        horizontal=True, key=f"qa_status_{project_id}",
+        label_visibility="collapsed",
+    )
+    status_map = {"פתוחות": "open", "טופלו": "resolved", "כל הסטטוסים": "all"}
+    persisted = storage.list_quality_issues(project_id, status=status_map[status_filter])
+
+    if persisted.empty:
+        st.caption("אין חריגות במעקב. לחץ '💾 רשום' באחת מהבדיקות למטה כדי להעביר ממצאים לכאן.")
+    else:
+        # KPI
+        cA, cB, cC = st.columns(3)
+        cA.metric("פתוחות", str(int((persisted["status"] == "open").sum())))
+        cB.metric("טופלו", str(int((persisted["status"] == "resolved").sum())))
+        cC.metric("השפעה כספית פתוחה",
+                  f"₪{persisted.loc[persisted['status']=='open','estimated_impact_nis'].sum():,.0f}")
+
+        # Show as expandable list with action buttons
+        for _, row in persisted.head(20).iterrows():
+            issue_id = int(row["id"])
+            is_open = row["status"] == "open"
+            icon = "🔴" if is_open else "✅"
+            sev = row.get("severity") or "?"
+            impact = row.get("estimated_impact_nis") or 0
+            label = f"{icon} {row['check_type']} · {row['entity']} · ₪{impact:,.0f} ({sev})"
+
+            with st.expander(label):
+                st.write(f"**פרטים**: {row.get('details', '—')}")
+                st.caption(f"חודש: {row.get('month', '—')} · "
+                           f"נוצר: {row.get('created_at', '—')} · "
+                           f"סטטוס: {row['status']}")
+                if row.get("notes"):
+                    st.caption(f"הערות: {row['notes']}")
+
+                if is_open:
+                    c_r, c_d, c_n = st.columns([1, 1, 3])
+                    with c_r:
+                        if st.button("✅ סמן כטופל", key=f"resolve_{issue_id}",
+                                     use_container_width=True):
+                            storage.mark_issue_resolved(issue_id, notes="resolved")
+                            st.success("סומן כטופל")
+                            st.rerun()
+                    with c_d:
+                        if st.button("🚫 דחה", key=f"dismiss_{issue_id}",
+                                     use_container_width=True):
+                            import sqlite3
+                            with sqlite3.connect(storage.DB_CONTROL) as conn:
+                                conn.execute(
+                                    "UPDATE data_quality_issues SET status='dismissed', "
+                                    "updated_at=? WHERE id=?",
+                                    [pd.Timestamp.now().isoformat(timespec="seconds"), issue_id],
+                                )
+                            st.info("נדחה")
+                            st.rerun()
+
+        if len(persisted) > 20:
+            st.caption(f"מציג 20 מתוך {len(persisted)}.")
+
+    st.markdown("---")
     chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
     hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
@@ -1089,13 +1152,31 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     else:
         st.caption(f"{len(unmapped)} חשבונות. עדכן את category_mapping.xlsx כדי לסווג אותם נכון.")
         st.dataframe(unmapped, use_container_width=True, hide_index=True)
-        from io import BytesIO
-        buf = BytesIO()
-        unmapped.to_excel(buf, index=False, engine="openpyxl")
-        st.download_button("⬇️ הורד unmapped_accounts.xlsx",
-                           data=buf.getvalue(),
-                           file_name="unmapped_accounts.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        col_dl, col_log = st.columns([2, 1])
+        with col_dl:
+            from io import BytesIO
+            buf = BytesIO()
+            unmapped.to_excel(buf, index=False, engine="openpyxl")
+            st.download_button("⬇️ הורד unmapped_accounts.xlsx",
+                               data=buf.getvalue(),
+                               file_name="unmapped_accounts.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with col_log:
+            if st.button("💾 רשום למעקב", key="log_unmapped",
+                         help="העברת כל החשבונות הלא ממופים לטבלת data_quality_issues"):
+                n = 0
+                for _, r in unmapped.iterrows():
+                    storage.log_quality_issue(
+                        project_id=project_id,
+                        check_type="unmapped_account",
+                        severity="medium",
+                        entity=str(r.get("account_num", "")),
+                        details=f"{r.get('account_name', '')}: {r.get('total_amount', 0):,.0f}₪",
+                        estimated_impact=float(r.get("total_amount", 0)),
+                    )
+                    n += 1
+                st.success(f"נרשמו {n} חשבונות למעקב")
+                st.rerun()
 
     # ── 2. תנועות עם ספק ריק / חשוד ──
     sec("תנועות ללא ספק / פרטים ריקים")
