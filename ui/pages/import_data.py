@@ -122,14 +122,13 @@ def render_import_page(projects: list[dict]) -> None:
     with col_m:
         month = st.text_input(
             "חודש (פורמט: MM-YYYY)", key="imp_month",
-            placeholder="לדוגמה: 05-2026",
         ).strip()
 
     if not month:
         st.info("הזן חודש לפי הפורמט MM-YYYY כדי להמשיך.")
         return
     if not _MONTH_RE.match(month):
-        st.error(f"פורמט חודש לא תקין: '{month}'. השתמש ב-MM-YYYY (לדוגמה 05-2026).")
+        st.error(f"פורמט חודש לא תקין: '{month}'. השתמש ב-MM-YYYY.")
         return
 
     month_dir = PROJECTS_ROOT / project_id / month

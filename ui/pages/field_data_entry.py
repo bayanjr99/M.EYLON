@@ -177,9 +177,9 @@ def _render_tools_management() -> None:
     with st.form("add_tool_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            new_lic_str = st.text_input("מספר רישוי *", help="לדוגמה: 168792")
+            new_lic_str = st.text_input("מספר רישוי *")
         with c2:
-            new_name = st.text_input("שם / דגם *", help="לדוגמה: שופל קטרפילר 966M")
+            new_name = st.text_input("שם / דגם *")
         with c3:
             new_internal = st.text_input("מספר פנימי", help="מספר שלך / מקובץ עליו תזכור")
         c4, c5, c6, c7 = st.columns(4)
@@ -195,8 +195,7 @@ def _render_tools_management() -> None:
             new_status = st.selectbox("סטטוס", control_db.EQUIPMENT_STATUSES)
         c8, c9, c10 = st.columns(3)
         with c8:
-            new_type = st.text_input("סוג כלי (תיאור חופשי)",
-                                       help="לדוגמה: שופל גדול / באגר זחל / בובקט")
+            new_type = st.text_input("סוג כלי (תיאור חופשי)")
         with c9:
             new_owner = st.text_input("בעלים שם",
                                        help="בעלים אילון / אבו גאנם / וכו'")
@@ -270,8 +269,7 @@ def _render_tools_management() -> None:
         # Delete by license_num
         c_d1, c_d2 = st.columns([1, 3])
         with c_d1:
-            del_lic_str = st.text_input("מחק לפי רישוי", key="del_tool_lic",
-                                          placeholder="לדוגמה: 168792")
+            del_lic_str = st.text_input("מחק לפי רישוי", key="del_tool_lic")
         with c_d2:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             try:
@@ -324,8 +322,7 @@ def _render_fuel_quick_form(project_id: str) -> None:
                 qf_date = st.date_input("תאריך", value=date_cls.today(), key="qf_date")
                 qf_driver = st.text_input("נהג / מפעיל", key="qf_driver")
             with c2:
-                qf_supplier = st.text_input("ספק", key="qf_supplier",
-                                              placeholder="לדוגמה: נ. ג'אן")
+                qf_supplier = st.text_input("ספק", key="qf_supplier")
                 qf_invoice = st.text_input("מס' חשבונית", key="qf_invoice")
                 qf_liters = st.number_input("ליטרים *", min_value=0.0, step=1.0,
                                               key="qf_liters")

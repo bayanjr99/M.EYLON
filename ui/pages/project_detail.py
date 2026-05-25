@@ -2699,7 +2699,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                     if "סולר" in d: return "סולר"
                     return "לא ידוע"
                 cand_disp["סוג דלק משוער"] = cand_disp["sample_description"].apply(_guess_fuel_type)
-                cand_disp.columns = ["מס' רישוי שחולץ", "פרטים לדוגמה",
+                cand_disp.columns = ["מס' רישוי שחולץ", "פרטים",
                                        "תנועות", "סה\"כ (₪)", "סוג דלק משוער"]
                 st.dataframe(cand_disp, use_container_width=True, hide_index=True)
 
@@ -2988,8 +2988,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
         with st.form(f"finv_form_{project_id}", clear_on_submit=True):
             fc1, fc2, fc3 = st.columns(3)
             with fc1:
-                inv_month = st.text_input("חודש (MM-YYYY) *",
-                                            placeholder="לדוגמה: 04-2026")
+                inv_month = st.text_input("חודש (MM-YYYY) *")
                 inv_fuel = st.selectbox("סוג דלק", ["סולר צמ\"ה", "סולר רכבים", "בנזין רכבים"],
                                           help="לסולר צמ\"ה רלוונטי במיוחד")
             with fc2:
@@ -2998,8 +2997,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
                 inv_close = st.number_input("מלאי סגירה (ל')",
                                               min_value=0.0, step=100.0, value=0.0)
             with fc3:
-                inv_tank = st.text_input("מזהה מיכל (אופציונלי)",
-                                           placeholder="לדוגמה: מיכל ראשי")
+                inv_tank = st.text_input("מזהה מיכל (אופציונלי)")
                 inv_notes = st.text_input("הערות")
             if st.form_submit_button("💾 שמור מלאי", type="primary",
                                        use_container_width=True):

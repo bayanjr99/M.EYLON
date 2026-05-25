@@ -63,28 +63,22 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
             name = st.text_input(
                 "שם פרויקט בעברית *",
                 key="new_proj_name_input",
-                placeholder="לדוגמה: פרויקט אום אל פחם",
             )
             site = st.text_input(
                 "שם אתר (אם שונה משם הפרויקט)",
-                placeholder="ברירת מחדל = שם הפרויקט",
             )
-            client = st.text_input(
-                "שם לקוח",
-                placeholder="לדוגמה: עיריית אום אל פחם",
-            )
+            client = st.text_input("שם לקוח")
         with c2:
             pid_default = suggested_id if suggested_id else ""
             pid = st.text_input(
                 "project_id (אנגלית, lower_case, ייחודי) *",
                 value=pid_default,
-                help="ייוצר אוטומטית מהשם. ניתן לערוך.",
             )
             status = st.selectbox("סטטוס", VALID_STATUSES, index=0)
             start_date = st.date_input(
                 "תאריך התחלה", value=date_cls.today(), format="DD/MM/YYYY",
             )
-        notes = st.text_area("הערות", placeholder="כל מידע נוסף על הפרויקט")
+        notes = st.text_area("הערות")
 
         col_submit, col_cancel = st.columns([3, 1])
         with col_submit:
