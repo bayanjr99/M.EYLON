@@ -244,8 +244,9 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                 _render_sub_tab("contractor_work_logs", project_id, None, None)
 
     with tabs[4]:
-        # כלים: 4 sub-tabs
-        sub = st.tabs(["רשימת כלים", "פעילות כלים", "עלויות כלי", "ניתוח כלי"])
+        # כלים: 5 sub-tabs (נוסף "כרטיס כלי" עם drill-down מלא)
+        sub = st.tabs(["רשימת כלים", "פעילות כלים", "עלויות כלי",
+                        "ניתוח כלי", "🔍 כרטיס כלי מלא"])
         with sub[0]:
             from ui.pages.field_data_entry import _render_tools_management
             _render_tools_management()
@@ -258,6 +259,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                 _render_sub_tab("maintenance_logs", project_id, None, None)
         with sub[3]:
             _subtab_cost_per_hour(df, project_meta)
+        with sub[4]:
+            _subtab_equipment_full_detail(df, project_meta)
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
@@ -321,6 +324,39 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
                         .groupby("supplier")["amount"].sum().nlargest(10).round(0).reset_index())
             top_sup.columns = ["ספק", "סה\"כ (₪)"]
             st.dataframe(top_sup, use_container_width=True, hide_index=True)
+
+    # ── Drill-Down: מה מרכיב את הסכומים? ──────────────────────
+    sec("🔍 פירוט מלא לכל מדד (Drill-Down)",
+        meta="בחר מדד לראות את התנועות שמרכיבות אותו")
+    chash_all = df[df["source"] == "chashbashevet"] if "source" in df.columns else df
+    if chash_all.empty:
+        st.caption("אין נתונים לפירוט.")
+        return
+
+    from core.chashbashevet_loader import INCOME_ACCOUNTS
+    DRILL_OPTIONS = [
+        ("— בחר —", None),
+        ("💰 כל ההכנסות", lambda d: d[d["account_num"].isin(INCOME_ACCOUNTS)] if "account_num" in d.columns else d.iloc[0:0]),
+        ("💸 כל ההוצאות", lambda d: d[(d["amount"] > 0) & (~d["account_num"].isin(INCOME_ACCOUNTS))] if "account_num" in d.columns else d.iloc[0:0]),
+        ("⛽ סה\"כ דלק ואנרגיה", lambda d: d[d.get("main_category", d.get("category", "")) == "דלק ואנרגיה"]),
+        ("👷 סה\"כ שכר עבודה", lambda d: d[d.get("main_category", d.get("category", "")) == "שכר עבודה"]),
+        ("🏢 סה\"כ קבלני משנה", lambda d: d[d.get("main_category", d.get("category", "")) == "קבלני משנה"]),
+        ("🔧 סה\"כ אחזקת כלים", lambda d: d[d.get("main_category", d.get("category", "")) == "אחזקת כלים"]),
+        ("🏗️ סה\"כ תשתיות", lambda d: d[d.get("main_category", d.get("category", "")) == "תשתיות"]),
+        ("🚮 סה\"כ פינוי פסולת", lambda d: d[d.get("main_category", d.get("category", "")) == "פינוי פסולת"]),
+        ("📊 סה\"כ ניהול ופיקוח", lambda d: d[d.get("main_category", d.get("category", "")) == "ניהול ופיקוח"]),
+    ]
+    pick = st.selectbox(
+        "בחר מדד", [o[0] for o in DRILL_OPTIONS],
+        key=f"overview_drill_{summary.get('months', ['x'])[0] if summary.get('months') else 'x'}",
+    )
+    if pick and pick != "— בחר —":
+        filt = next(f for (label, f) in DRILL_OPTIONS if label == pick)
+        if filt is None:
+            return
+        result = filt(chash_all)
+        _render_tx_detail(result, title=pick, key_prefix=f"overview_{pick}",
+                            file_basename="overview_drill")
 
 
 # ─── Tab 2: הכנסות (חשבוניות-לרמת-פירוט) ────────────────────
@@ -418,6 +454,38 @@ def _tab_income(df: pd.DataFrame) -> None:
     ins("blue", "ℹ️", "סטטוס גבייה",
         "סטטוס שולם/פתוח לא מנוטר אוטומטית מחשבשבת. לתצוגה מלאה - "
         "חבר קובץ <code>collections.xlsx</code> או מערכת CRM.")
+
+    # ── Drill-Down: לפי חשבון / לקוח / חודש ──
+    sec("🔍 Drill-Down - בחר ממד לפירוט")
+    drill_by = st.radio(
+        "ממד לפירוט", ["חשבון הכנסה", "לקוח", "חודש"],
+        horizontal=True, key="income_drill_dim",
+    )
+    if drill_by == "חשבון הכנסה" and "account_name" in income_all.columns:
+        accts = sorted(income_all["account_name"].dropna().unique().tolist())
+        pick = st.selectbox("בחר חשבון", ["— בחר —"] + accts, key="income_drill_acct")
+        if pick != "— בחר —":
+            _render_tx_detail(income_all[income_all["account_name"] == pick],
+                                title=pick, key_prefix=f"income_acct_{pick[:20]}",
+                                file_basename="income_by_account")
+    elif drill_by == "לקוח" and "supplier" in income_all.columns:
+        clients = sorted(income_all[income_all["supplier"].fillna("") != ""]
+                          ["supplier"].dropna().unique().tolist())
+        if not clients:
+            st.caption("אין לקוחות מזוהים.")
+        else:
+            pick = st.selectbox("בחר לקוח", ["— בחר —"] + clients, key="income_drill_cli")
+            if pick != "— בחר —":
+                _render_tx_detail(income_all[income_all["supplier"] == pick],
+                                    title=pick, key_prefix=f"income_cli_{pick[:20]}",
+                                    file_basename="income_by_client")
+    elif drill_by == "חודש" and "month" in income_all.columns:
+        months = sorted(income_all["month"].dropna().unique().tolist())
+        pick = st.selectbox("בחר חודש", ["— בחר —"] + months, key="income_drill_month")
+        if pick != "— בחר —":
+            _render_tx_detail(income_all[income_all["month"] == pick],
+                                title=pick, key_prefix=f"income_month_{pick}",
+                                file_basename="income_by_month")
 
 
 # ─── Tab 3: הוצאות (עם drill-down) ──────────────────────────
@@ -1657,6 +1725,85 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
 
 
 # ════════════════════════════════════════════════════════════
+# Helper: ייצוא DataFrame לאקסל בלי כפילויות קוד
+# ════════════════════════════════════════════════════════════
+def _excel_download(df: pd.DataFrame, sheet_name: str, file_name: str,
+                      label: str | None = None, key: str | None = None) -> None:
+    """כפתור הורדה אחיד ל-DataFrame כאקסל."""
+    if df.empty:
+        return
+    from io import BytesIO
+    buf = BytesIO()
+    safe_sheet = "".join(c if c.isalnum() else "_" for c in sheet_name)[:31]
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=safe_sheet, index=False)
+    btn_label = label or f"⬇️ הורד {len(df):,} שורות לאקסל"
+    st.download_button(
+        btn_label, data=buf.getvalue(), file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key,
+    )
+
+
+def _heb_columns(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """משנה שמות עמודות לעברית לפי mapping. עמודות לא ב-mapping נשארות."""
+    out = df.copy()
+    out.columns = [mapping.get(c, c) for c in out.columns]
+    return out
+
+
+_FULL_TX_COL_HEB = {
+    "date": "תאריך", "month": "חודש", "account_num": "מס' חשבון",
+    "account_name": "שם חשבון", "supplier": "ספק", "description": "פרטים",
+    "debit": "חובה", "credit": "זכות", "amount": "סכום",
+    "net_amount": "נטו (₪)", "category": "קטגוריה", "subcategory": "תת-קטגוריה",
+    "main_category": "קטגוריה ראשית", "sub_category": "תת-קטגוריה",
+    "source": "מקור קובץ", "anomaly_flags": "דגלים",
+    "classification_confidence": "בטחון סיווג",
+    "classification_note": "הסבר סיווג",
+    "is_credit_note": "זיכוי",
+    "license_num": "מס' רישוי", "tool_name": "שם כלי",
+    "liters": "ליטרים", "engine_hours": "שעות מנוע",
+    "work_hours": "שעות עבודה",
+}
+
+
+def _render_tx_detail(tx_df: pd.DataFrame, title: str, key_prefix: str,
+                       file_basename: str = "transactions") -> None:
+    """תצוגת פירוט תנועות אחידה: KPIs + טבלה עם עברית + ייצוא."""
+    if tx_df.empty:
+        st.caption(f"אין תנועות עבור {title}.")
+        return
+    n = len(tx_df)
+    sum_net = float(tx_df.get("net_amount", tx_df.get("amount", pd.Series([0]))).sum())
+    sum_debit = float(tx_df["debit"].sum()) if "debit" in tx_df.columns else 0
+    sum_credit = float(tx_df["credit"].sum()) if "credit" in tx_df.columns else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("תנועות", str(n))
+    c2.metric("נטו", f"₪{sum_net:,.0f}")
+    c3.metric("חובה", f"₪{sum_debit:,.0f}")
+    c4.metric("זכות", f"₪{sum_credit:,.0f}")
+
+    show_cols = [c for c in [
+        "date", "month", "account_num", "account_name", "supplier", "description",
+        "debit", "credit", "net_amount", "main_category", "sub_category",
+        "classification_confidence", "classification_note", "source",
+    ] if c in tx_df.columns]
+    disp = tx_df[show_cols].copy()
+    if "date" in disp.columns:
+        disp = disp.sort_values("date")
+    for c in ("debit", "credit", "net_amount", "amount"):
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce").round(0)
+    disp = _heb_columns(disp, _FULL_TX_COL_HEB)
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+    _excel_download(disp, sheet_name=title[:31],
+                     file_name=f"{file_basename}_{key_prefix}.xlsx",
+                     key=f"dl_{key_prefix}")
+
+
+# ════════════════════════════════════════════════════════════
 # SUB-TABS חדשים למבנה המקצועי (8 ראשיים)
 # ════════════════════════════════════════════════════════════
 
@@ -2120,6 +2267,78 @@ def _subtab_site_journal(project_meta: dict) -> None:
 
 
 # ─── תפעול ושטח → שעות עבודה כלים ───────────────────────────
+def _drill_hours_by_entity(combined: pd.DataFrame, entity_col: str,
+                             entity_label: str, key_prefix: str,
+                             month_col: str = "month_label") -> None:
+    """Drill-down כללי לטאב שעות: בחר ישות (כלי/עובד/קבלן/חודש) → פירוט."""
+    if combined.empty:
+        return
+    sec(f"🔍 Drill-Down לפי {entity_label}")
+    dim = st.radio(f"ממד לפירוט", [entity_label, "חודש"],
+                     horizontal=True, key=f"{key_prefix}_dim")
+    if dim == entity_label:
+        if entity_col not in combined.columns:
+            st.caption("אין נתונים.")
+            return
+        opts = sorted([str(x) for x in combined[entity_col].dropna().unique()
+                        if str(x).strip()])
+        pick = st.selectbox(f"בחר {entity_label}", ["— בחר —"] + opts,
+                              key=f"{key_prefix}_pick")
+        if pick != "— בחר —":
+            sub = combined[combined[entity_col].astype(str) == pick]
+            _render_hours_detail(sub, title=pick, key_prefix=f"{key_prefix}_{pick[:20]}")
+    else:
+        mcol = month_col if month_col in combined.columns else \
+                ("month" if "month" in combined.columns else None)
+        if mcol is None:
+            st.caption("אין עמודת חודש.")
+            return
+        months = sorted([str(x) for x in combined[mcol].dropna().unique()])
+        pick = st.selectbox("בחר חודש", ["— בחר —"] + months,
+                              key=f"{key_prefix}_month_pick")
+        if pick != "— בחר —":
+            sub = combined[combined[mcol].astype(str) == pick]
+            _render_hours_detail(sub, title=pick, key_prefix=f"{key_prefix}_m_{pick}")
+
+
+def _render_hours_detail(df: pd.DataFrame, title: str, key_prefix: str) -> None:
+    """תצוגת פירוט שעות עבודה אחידה."""
+    if df.empty:
+        st.caption(f"אין רשומות עבור {title}.")
+        return
+    total_h = 0
+    if "work_hours" in df.columns:
+        total_h = float(pd.to_numeric(df["work_hours"], errors="coerce").fillna(0).sum())
+    elif "hours" in df.columns:
+        total_h = float(pd.to_numeric(df["hours"], errors="coerce").fillna(0).sum())
+    days = 0
+    if "date" in df.columns:
+        days = int(pd.to_datetime(df["date"], errors="coerce").dropna().nunique())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("רשומות", str(len(df)))
+    c2.metric("סה\"כ שעות", f"{total_h:,.1f}")
+    c3.metric("ימים", str(days))
+
+    cols = [c for c in ["date", "name", "tool_name", "license_num", "operator",
+                          "start_time", "end_time", "work_hours", "hours", "days",
+                          "engine_hours", "section", "notes", "project_id"]
+            if c in df.columns]
+    heb = {"date": "תאריך", "name": "שם", "tool_name": "כלי", "license_num": "רישוי",
+            "operator": "מפעיל", "start_time": "התחלה", "end_time": "סיום",
+            "work_hours": "ש\"ע", "hours": "שעות", "days": "ימים",
+            "engine_hours": "ש\"מ", "section": "סעיף", "notes": "הערות",
+            "project_id": "פרויקט"}
+    disp = df[cols].copy()
+    if "date" in disp.columns:
+        disp = disp.sort_values("date")
+    disp.columns = [heb.get(c, c) for c in cols]
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+    _excel_download(disp, sheet_name=title[:31],
+                      file_name=f"hours_{key_prefix}.xlsx",
+                      key=f"dl_hours_{key_prefix}")
+
+
 def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
     """שעות עבודה כלים - מאחד hours.xlsx + site_tracking + control_db."""
     sec("שעות עבודה כלים", meta="מאוחד מ-hours.xlsx + site_tracking + הזנה ידנית")
@@ -2175,6 +2394,24 @@ def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
         disp.columns = [heb.get(c, c) for c in cols]
         st.dataframe(disp, use_container_width=True, hide_index=True)
 
+    # ── Drill-Down: בחר כלי/חודש ──
+    combined = []
+    if not site_hours.empty:
+        s = site_hours.copy()
+        s["source"] = "site_tracking"
+        combined.append(s)
+    if not manual.empty:
+        m = manual.copy()
+        m["tool_name"] = m.get("tool_name", "")
+        m["source"] = "manual"
+        if "operator" in m.columns and "name" not in m.columns:
+            m["name"] = m["operator"]
+        combined.append(m)
+    if combined:
+        all_h = pd.concat(combined, ignore_index=True, sort=False)
+        _drill_hours_by_entity(all_h, "tool_name", "כלי",
+                                 key_prefix="eqh", month_col="month_label")
+
 
 # ─── תפעול ושטח → קבלני משנה בשטח ──────────────────────────
 def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
@@ -2220,6 +2457,22 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
         disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
         disp.columns = [heb.get(c, c) for c in cols]
         st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── Drill-Down: בחר קבלן / חודש ──
+    combined_c = []
+    if not sub_hours.empty:
+        s = sub_hours.copy()
+        s["source"] = "site_tracking"
+        combined_c.append(s)
+    if not manual.empty:
+        m = manual.copy()
+        m["name"] = m.get("contractor_name", "")
+        m["source"] = "manual"
+        combined_c.append(m)
+    if combined_c:
+        all_c = pd.concat(combined_c, ignore_index=True, sort=False)
+        _drill_hours_by_entity(all_c, "name", "קבלן",
+                                 key_prefix="con", month_col="month_label")
 
 
 # ─── סולר וכלים → קניות סולר ───────────────────────────────
@@ -3158,6 +3411,163 @@ def _subtab_backup_export(project_meta: dict) -> None:
             file_name=f"export_{project_id}_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+
+# ─── כרטיס כלי מלא (Drill-Down כל מה שקשור לכלי) ───────────
+def _subtab_equipment_full_detail(df: pd.DataFrame, project_meta: dict) -> None:
+    """דף סיכום מלא לכלי: פרטים + דלק + שעות + טיפולים + חריגות + ייצוא."""
+    from pipeline import _load_tools_registry, load_fuel_invoices_data, load_site_tracking_data
+    from core import control_db
+    project_id = project_meta["project_id"]
+
+    equipment = _load_tools_registry()
+    if equipment.empty:
+        ins("blue", "ℹ️", "אין כלים ב-tools_registry",
+            "הוסף כלים בטאב 'רשימת כלים'.")
+        return
+
+    # ── בחירת כלי ──
+    options = ["— בחר כלי —"]
+    for _, eq in equipment.iterrows():
+        lic = eq.get("license_num")
+        name = eq.get("tool_name", "")
+        if pd.notna(lic):
+            options.append(f"{int(lic)} · {name}")
+    pick = st.selectbox("בחר כלי לפירוט מלא", options,
+                          key=f"eq_detail_{project_id}")
+    if pick == "— בחר כלי —":
+        st.caption("בחר כלי מהרשימה לראות את כל הפעילות שלו.")
+        return
+
+    lic = int(pick.split(" · ", 1)[0])
+    eq_row = equipment[equipment["license_num"] == lic].iloc[0]
+
+    # ── פרטי הכלי ──
+    sec(f"פרטי כלי - {eq_row.get('tool_name', '')}")
+    info_cols = st.columns(4)
+    info_cols[0].metric("מס' רישוי", str(lic))
+    info_cols[1].metric("קבוצה", str(eq_row.get("equipment_group") or "—"))
+    info_cols[2].metric("סוג דלק מוגדר", str(eq_row.get("fuel_type") or "—"))
+    info_cols[3].metric("סטטוס", str(eq_row.get("status") or "—"))
+
+    info_cols2 = st.columns(4)
+    info_cols2[0].metric("בעלות", str(eq_row.get("ownership") or "—"))
+    info_cols2[1].metric("תקן עליון (ל'/ש')",
+                          f"{float(eq_row['norm_high']):.1f}"
+                          if pd.notna(eq_row.get("norm_high")) else "—")
+    info_cols2[2].metric("שם בעלים", str(eq_row.get("owner") or "—"))
+    info_cols2[3].metric("מס' פנימי", str(eq_row.get("internal_num") or "—"))
+
+    # ── איסוף כל הפעילות ──
+    solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
+    hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
+
+    tool_solar = solar[solar["license_num"] == lic] if "license_num" in solar.columns else pd.DataFrame()
+    tool_hours = hours[hours["license_num"] == lic] if "license_num" in hours.columns else pd.DataFrame()
+
+    site_data = load_site_tracking_data(project_id)
+    site_solar = site_data.get("fuel", pd.DataFrame())
+    site_tools = site_data.get("tools_hours", pd.DataFrame())
+    if not site_solar.empty and "license_num" in site_solar.columns:
+        site_solar = site_solar[site_solar["license_num"] == lic]
+    if not site_tools.empty and "license_num" in site_tools.columns:
+        site_tools = site_tools[site_tools["license_num"] == lic]
+
+    manual_fuel = control_db.list_rows("fuel_logs", project_id)
+    manual_eq = control_db.list_rows("equipment_work_logs", project_id)
+    manual_maint = control_db.list_rows("maintenance_logs", project_id)
+    if not manual_fuel.empty:
+        manual_fuel = manual_fuel[manual_fuel["license_num"] == lic]
+    if not manual_eq.empty:
+        manual_eq = manual_eq[manual_eq["license_num"] == lic]
+    if not manual_maint.empty:
+        manual_maint = manual_maint[manual_maint["license_num"] == lic]
+
+    # ── KPI סיכום ──
+    sec("סיכום פעילות")
+    total_liters = (
+        (float(tool_solar["liters"].sum()) if not tool_solar.empty and "liters" in tool_solar.columns else 0) +
+        (float(site_solar["liters"].sum()) if not site_solar.empty and "liters" in site_solar.columns else 0) +
+        (float(manual_fuel["liters"].sum()) if not manual_fuel.empty and "liters" in manual_fuel.columns else 0)
+    )
+    total_work_hours = (
+        (float(tool_hours["work_hours"].sum()) if not tool_hours.empty and "work_hours" in tool_hours.columns else 0) +
+        (float(site_tools["work_hours"].sum()) if not site_tools.empty and "work_hours" in site_tools.columns else 0) +
+        (float(manual_eq["work_hours"].sum()) if not manual_eq.empty and "work_hours" in manual_eq.columns else 0)
+    )
+    total_maint_cost = float(manual_maint["cost"].sum()) \
+        if not manual_maint.empty and "cost" in manual_maint.columns else 0
+    fuel_cost_manual = float(manual_fuel["total_cost"].sum()) \
+        if not manual_fuel.empty and "total_cost" in manual_fuel.columns else 0
+    lph = (total_liters / total_work_hours) if total_work_hours > 0 else 0
+    cost_per_hour = ((fuel_cost_manual + total_maint_cost) / total_work_hours) if total_work_hours > 0 else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("סה\"כ ליטרים", f"{total_liters:,.0f}")
+    k2.metric("סה\"כ שעות עבודה", f"{total_work_hours:,.1f}")
+    k3.metric("עלות אחזקה (₪)", f"₪{total_maint_cost:,.0f}")
+    k4.metric("ל'/ש' בפועל", f"{lph:.1f}" if lph else "—")
+
+    # ── טיימליין מאוחד ──
+    sec("טיימליין פעילות לכלי")
+    timeline_rows = []
+    for src_df, action, src_label in [
+        (tool_solar, "תדלוק", "solar.xlsx"),
+        (site_solar, "תדלוק", "site_tracking"),
+        (manual_fuel, "תדלוק", "ידני"),
+        (tool_hours, "שעות עבודה", "hours.xlsx"),
+        (site_tools, "שעות עבודה", "site_tracking"),
+        (manual_eq, "שעות עבודה", "ידני"),
+        (manual_maint, "טיפול/אחזקה", "ידני"),
+    ]:
+        if src_df is None or src_df.empty:
+            continue
+        for _, row in src_df.iterrows():
+            timeline_rows.append({
+                "תאריך": row.get("date"),
+                "סוג פעולה": action,
+                "ליטרים": row.get("liters") if pd.notna(row.get("liters")) else None,
+                "שעות": row.get("work_hours") if pd.notna(row.get("work_hours")) else None,
+                "סכום (₪)": row.get("cost") or row.get("total_cost") or None,
+                "ספק/מוסך": row.get("supplier") or row.get("garage_supplier") or "",
+                "פרטים": row.get("description") or row.get("treatment_type") or
+                          row.get("notes") or "",
+                "מקור": src_label,
+            })
+    if not timeline_rows:
+        ins("blue", "ℹ️", "אין פעילות מתועדת לכלי",
+            "טען נתוני סולר/שעות/טיפולים בטאבים הרלוונטיים.")
+        return
+
+    tdf = pd.DataFrame(timeline_rows)
+    tdf["תאריך"] = pd.to_datetime(tdf["תאריך"], errors="coerce")
+    tdf = tdf.sort_values("תאריך", ascending=False)
+    for c in ("ליטרים", "שעות", "סכום (₪)"):
+        if c in tdf.columns:
+            tdf[c] = pd.to_numeric(tdf[c], errors="coerce").round(1)
+    st.dataframe(tdf, use_container_width=True, hide_index=True)
+    _excel_download(tdf, sheet_name=f"כלי_{lic}",
+                      file_name=f"equipment_{lic}_full.xlsx",
+                      key=f"dl_eq_full_{lic}")
+
+    # ── חריגות לכלי ──
+    sec("חריגות שזוהו לכלי")
+    alerts = []
+    if total_liters > 0 and total_work_hours == 0:
+        alerts.append(("⚠️", "סולר ללא שעות עבודה",
+                       f"{total_liters:,.0f} ליטר ללא שום שעת עבודה מדווחת"))
+    if total_work_hours > 0 and total_liters == 0:
+        alerts.append(("ℹ️", "שעות עבודה ללא תדלוק",
+                       f"{total_work_hours:,.1f} שעות בלי תדלוק - ייתכן חשמלי או תדלוק חיצוני"))
+    norm_high = float(eq_row.get("norm_high")) if pd.notna(eq_row.get("norm_high")) else None
+    if norm_high and lph > norm_high * 1.15:
+        alerts.append(("🚨", f"חריגת צריכה - {lph:.1f} ל'/ש' > {norm_high}",
+                       f"חריגה של {(lph/norm_high - 1)*100:.0f}% מהתקן העליון"))
+    if alerts:
+        for icon, title, body in alerts:
+            ins("amber", icon, title, body)
+    else:
+        ins("green", "✓", "אין חריגות", "הכלי בתקן.")
 
 
 # ─── תרגום תוויות קטגוריה ─────────────────────────────────
