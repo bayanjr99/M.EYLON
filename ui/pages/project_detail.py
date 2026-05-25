@@ -1182,6 +1182,13 @@ def _subtab_accounts_rollup(df: pd.DataFrame, project_meta: dict | None = None) 
         ins("blue", "ℹ️", "אין נתוני חשבשבת", "טען כרטיס הנהלה.")
         return
 
+    # Defensive: derive debit/credit from amount if columns are missing
+    # (happens with master.parquet built before debit/credit were added to schema).
+    chash = chash.copy()
+    if "debit" not in chash.columns or "credit" not in chash.columns:
+        chash["debit"] = chash["amount"].where(chash["amount"] > 0, 0)
+        chash["credit"] = (-chash["amount"]).where(chash["amount"] < 0, 0)
+
     fallback_cats = {"אחר", "הוצאות תפעוליות", "הוצאות פרויקט", "הוצאות שכר/כלליות"}
     agg = chash.groupby(["account_num", "account_name"], dropna=False).agg(
         debit=("debit", "sum"),

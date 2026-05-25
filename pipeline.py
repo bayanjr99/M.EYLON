@@ -47,6 +47,8 @@ MASTER_SCHEMA_COLS = [
     "account_num", "account_name",
     "supplier", "description",
     "amount", "source", "anomaly_flags",
+    # debit/credit הפרטניים מחשבשבת (שומר את הפיצול לצורך reconciliation)
+    "debit", "credit",
     # סולר
     "license_num", "tool_name", "liters", "engine_hours",
     # שעות
@@ -347,6 +349,8 @@ def aggregate_month(
             "supplier": chash["supplier"],
             "description": chash["details"],
             "amount": chash["amount"],
+            "debit": chash["debit"],
+            "credit": chash["credit"],
             "source": "chashbashevet",
             "anomaly_flags": "",
         })
