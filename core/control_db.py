@@ -174,6 +174,23 @@ CREATE INDEX IF NOT EXISTS idx_dq_proj_month ON data_quality_issues(project_id, 
 CREATE INDEX IF NOT EXISTS idx_dq_status     ON data_quality_issues(status);
 CREATE INDEX IF NOT EXISTS idx_dq_check      ON data_quality_issues(check_type);
 
+-- Fuel inventory entries (in-app entry of opening/closing per month per fuel_type)
+-- אופציונלית - יכול לדור-בצד עם data/projects/<id>/<month>/fuel_inventory.xlsx
+CREATE TABLE IF NOT EXISTS fuel_inventory_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  TEXT NOT NULL,
+    month       TEXT NOT NULL,            -- MM-YYYY
+    fuel_type   TEXT NOT NULL DEFAULT 'סולר צמ"ה',
+    tank_id     TEXT,                     -- מזהה מיכל (אם יש כמה)
+    opening_l   REAL,
+    closing_l   REAL,
+    notes       TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(project_id, month, fuel_type, tank_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finv_proj_month ON fuel_inventory_entries(project_id, month);
+
 -- Projects master (mirror of projects_registry.xlsx, mutable from UI)
 CREATE TABLE IF NOT EXISTS projects (
     project_id      TEXT PRIMARY KEY,
@@ -708,6 +725,75 @@ def list_suppliers() -> pd.DataFrame:
             "SELECT * FROM suppliers ORDER BY primary_category, supplier_name",
             conn,
         )
+
+
+# ── Fuel inventory CRUD ───────────────────────────────────────
+def list_fuel_inventory(project_id: str, month: str | None = None,
+                          fuel_type: str | None = None) -> pd.DataFrame:
+    """רשימת רישומי מלאי לפרויקט."""
+    init()
+    sql = "SELECT * FROM fuel_inventory_entries WHERE project_id = ?"
+    params = [project_id]
+    if month:
+        sql += " AND month = ?"
+        params.append(month)
+    if fuel_type:
+        sql += " AND fuel_type = ?"
+        params.append(fuel_type)
+    sql += " ORDER BY month, fuel_type, tank_id"
+    with _connect() as conn:
+        return pd.read_sql(sql, conn, params=params)
+
+
+def save_fuel_inventory(project_id: str, month: str, fuel_type: str = "סולר צמ\"ה",
+                          opening_l: float | None = None,
+                          closing_l: float | None = None,
+                          tank_id: str = "", notes: str = "") -> tuple[bool, str]:
+    """upsert של רישום מלאי. UNIQUE על (project, month, fuel_type, tank)."""
+    if not month:
+        return False, "חודש חובה"
+    if opening_l is None and closing_l is None:
+        return False, "יש להזין לפחות מלאי פתיחה או סגירה"
+    init()
+    now = datetime.now().isoformat(timespec="seconds")
+    tank_norm = (tank_id or "").strip() or None
+    try:
+        with _connect() as conn:
+            existing = conn.execute(
+                """SELECT id FROM fuel_inventory_entries
+                   WHERE project_id = ? AND month = ? AND fuel_type = ?
+                   AND COALESCE(tank_id,'') = COALESCE(?, '')""",
+                [project_id, month, fuel_type, tank_norm or ""],
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE fuel_inventory_entries SET
+                       opening_l=?, closing_l=?, notes=?, updated_at=?
+                       WHERE id=?""",
+                    [opening_l, closing_l, notes, now, existing["id"]],
+                )
+                return True, f"עודכן: {month} {fuel_type}"
+            conn.execute(
+                """INSERT INTO fuel_inventory_entries
+                   (project_id, month, fuel_type, tank_id, opening_l, closing_l,
+                    notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [project_id, month, fuel_type, tank_norm,
+                 opening_l, closing_l, notes, now, now],
+            )
+            return True, f"נוסף: {month} {fuel_type}"
+    except sqlite3.IntegrityError as e:
+        return False, f"שגיאה: {e}"
+
+
+def delete_fuel_inventory(entry_id: int, project_id: str) -> bool:
+    init()
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM fuel_inventory_entries WHERE id = ? AND project_id = ?",
+            [entry_id, project_id],
+        )
+        return cur.rowcount > 0
 
 
 def count_rows(project_id: str) -> dict[str, int]:

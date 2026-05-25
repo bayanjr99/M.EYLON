@@ -2682,50 +2682,205 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                      use_container_width=True, hide_index=True)
 
 
-# ─── סולר וכלים → מלאי סולר ────────────────────────────────
+# ─── סולר וכלים → מלאי סולר (Step 4) ───────────────────────
 def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
-    """מאזן מלאי סולר - פתיחה + קניות - שימושים = סגירה."""
-    sec("מאזן מלאי סולר", meta="מ-fuel_inventory.xlsx (אופציונלי, ידני)")
+    """מאזן מלאי סולר עם הפרדה לפי סוג דלק + טופס הזנה + reconciliation.
+
+    סולר צמ"ה: מאזן מלאי מלא (פתיחה + קניות - שימושים = סגירה).
+    בנזין / חשמל / סולר רכבים: רק קניות vs שימוש, ללא מלאי פיזי.
+    """
+    from core import control_db
+    from pipeline import load_fuel_invoices_data
     project_id = project_meta["project_id"]
-    inv = _collect_fuel_inventory(project_id)
-    if inv.empty:
-        ins("blue", "ℹ️", "אין קובץ fuel_inventory.xlsx",
-            "הוסף קובץ עם עמודות <code>חודש / מלאי פתיחה (ל') / מלאי סגירה (ל')</code> "
-            "לתיקיית החודש כדי לראות מאזן מלאי.")
-        return
 
-    # Compute purchases and usage per month
-    fuel_chash = _filter_by_keywords(df, KEYWORD_CATEGORIES["fuel"])
-    if "amount" in fuel_chash.columns:
-        fuel_chash = fuel_chash[fuel_chash["amount"] > 0]
+    chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
-    total_chash = float(fuel_chash["amount"].sum()) if not fuel_chash.empty else 0
-    total_solar_l = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0
-    avg_price = total_chash / total_solar_l if total_solar_l > 0 else 0
+    if "main_category" in chash.columns:
+        fuel_chash = chash[chash["main_category"] == "דלק ואנרגיה"]
+    else:
+        fuel_chash = pd.DataFrame()
 
-    pp = {}
-    if not fuel_chash.empty and avg_price > 0 and "month" in fuel_chash.columns:
-        for m, grp in fuel_chash.groupby("month"):
-            pp[m] = float(grp["amount"].sum()) / avg_price
-    upm = {}
-    if not solar.empty and "month" in solar.columns:
-        for m, grp in solar.groupby("month"):
-            upm[m] = float(grp["liters"].sum())
+    # ── סיכום עליון לפי סוג דלק ──
+    sec("סיכום מלאי וקניות לפי סוג דלק")
+    FUEL_TYPES = [
+        ("סולר צמ\"ה", "🚜", True),    # has_inventory=True
+        ("סולר רכבים", "🚗", False),
+        ("בנזין רכבים", "⛽", False),
+        ("טעינת חשמל רכבים", "🔌", False),
+    ]
+    cols_top = st.columns(4)
+    for col, (ftype, icon, has_inv) in zip(cols_top, FUEL_TYPES):
+        sub = fuel_chash[fuel_chash["sub_category"] == ftype] if not fuel_chash.empty else pd.DataFrame()
+        purchases = float(sub["net_amount"].sum()) if not sub.empty and "net_amount" in sub.columns else 0
+        n = len(sub)
+        with col:
+            bg = "#F0FDF4" if has_inv else "#F8FAFC"
+            inv_label = "📦 עם מאזן מלאי" if has_inv else "ללא מלאי פיזי"
+            st.markdown(
+                f"""<div style="background:{bg};border:1px solid #BBF7D0;border-radius:10px;
+                padding:14px;text-align:center">
+                  <div style="font-size:22px">{icon}</div>
+                  <div style="font-size:11px;font-weight:700;color:#475569;margin:4px 0">{ftype}</div>
+                  <div style="font-size:18px;font-weight:800;color:#0F172A">₪{purchases:,.0f}</div>
+                  <div style="font-size:10px;color:#64748B;margin-top:4px">{n} תנועות · {inv_label}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
-    from core.fuel_inventory import compute_balance
-    balance = compute_balance(inv, pp, upm)
-    if balance.empty:
-        st.caption("אין מספיק נתונים לחישוב מאזן.")
-        return
+    # ── סולר צמ"ה: מאזן מלאי מלא ──
+    sec("📦 סולר צמ\"ה - מאזן מלאי", meta="פתיחה + קניות - שימושים = סגירה")
 
-    disp = balance.copy()
-    disp.columns = ["חודש", "פתיחה", "קניות", "שימושים", "סגירה צפויה",
-                    "סגירה בפועל", "הפרש", "סטטוס"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
-    n_bad = int((balance["status"] == "חוסר").sum())
-    if n_bad:
-        ins("amber", "⚠️", f"{n_bad} חודשים עם חוסר",
-            "ההפרש מצביע על שימוש לא מתועד או פחת חריג.")
+    # 1. טופס הזנת מלאי
+    with st.expander("➕ הזנת מלאי פתיחה/סגירה (סולר צמ\"ה)"):
+        with st.form(f"finv_form_{project_id}", clear_on_submit=True):
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                inv_month = st.text_input("חודש (MM-YYYY) *",
+                                            placeholder="לדוגמה: 04-2026")
+                inv_fuel = st.selectbox("סוג דלק", ["סולר צמ\"ה", "סולר רכבים", "בנזין רכבים"],
+                                          help="לסולר צמ\"ה רלוונטי במיוחד")
+            with fc2:
+                inv_open = st.number_input("מלאי פתיחה (ל')",
+                                             min_value=0.0, step=100.0, value=0.0)
+                inv_close = st.number_input("מלאי סגירה (ל')",
+                                              min_value=0.0, step=100.0, value=0.0)
+            with fc3:
+                inv_tank = st.text_input("מזהה מיכל (אופציונלי)",
+                                           placeholder="לדוגמה: מיכל ראשי")
+                inv_notes = st.text_input("הערות")
+            if st.form_submit_button("💾 שמור מלאי", type="primary",
+                                       use_container_width=True):
+                ok, msg = control_db.save_fuel_inventory(
+                    project_id, inv_month.strip(), fuel_type=inv_fuel,
+                    opening_l=inv_open if inv_open > 0 else None,
+                    closing_l=inv_close if inv_close > 0 else None,
+                    tank_id=inv_tank.strip(), notes=inv_notes.strip(),
+                )
+                if ok:
+                    st.success(msg)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    # 2. חישוב מאזן (מ-SQLite + xlsx + נתונים מחושבים)
+    inv_db = control_db.list_fuel_inventory(project_id, fuel_type="סולר צמ\"ה")
+    inv_xlsx = _collect_fuel_inventory(project_id)
+    # union: SQLite גובר על xlsx על אותו חודש
+    inv_all = inv_db[["month", "opening_l", "closing_l"]].copy() if not inv_db.empty else \
+              pd.DataFrame(columns=["month", "opening_l", "closing_l"])
+    if not inv_xlsx.empty:
+        new = inv_xlsx[~inv_xlsx["month"].isin(inv_all["month"])]
+        inv_all = pd.concat([inv_all, new], ignore_index=True, sort=False)
+
+    if inv_all.empty:
+        ins("blue", "ℹ️", "אין נתוני מלאי",
+            "הזן מלאי פתיחה/סגירה בטופס לעיל. בלי זה אי אפשר לחשב מאזן.")
+    else:
+        # קניות סולר צמ"ה לפי חודש (₪ + ליטרים מ-fuel_invoices אם קיים)
+        zmh_chash = fuel_chash[fuel_chash["sub_category"] == "סולר צמ\"ה"] if not fuel_chash.empty else pd.DataFrame()
+        inv_book = load_fuel_invoices_data(project_id)
+
+        purchases_l_per_month = {}
+        if not inv_book.empty and "liters" in inv_book.columns:
+            for m, grp in inv_book.groupby("month"):
+                purchases_l_per_month[m] = float(grp["liters"].sum())
+        else:
+            # fallback - infer liters מ-chashbashevet ₪ / avg price
+            zmh_total = float(zmh_chash["net_amount"].sum()) if not zmh_chash.empty else 0
+            solar_total_l = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0
+            avg_p = zmh_total / solar_total_l if solar_total_l > 0 else 6.94
+            if not zmh_chash.empty:
+                for m, grp in zmh_chash.groupby("month"):
+                    purchases_l_per_month[m] = float(grp["net_amount"].sum()) / avg_p
+
+        # שימושים - מ-solar.xlsx
+        usage_l_per_month = {}
+        if not solar.empty and "liters" in solar.columns:
+            for m, grp in solar.groupby("month"):
+                usage_l_per_month[m] = float(grp["liters"].sum())
+
+        from core.fuel_inventory import compute_balance
+        balance = compute_balance(inv_all, purchases_l_per_month, usage_l_per_month)
+        if balance.empty:
+            st.caption("מאזן ריק.")
+        else:
+            disp = balance.copy()
+            disp.columns = ["חודש", "פתיחה (ל')", "קניות (ל')", "שימושים (ל')",
+                            "סגירה צפויה", "סגירה בפועל", "הפרש", "סטטוס"]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+            n_bad = int((balance["status"] == "חוסר").sum())
+            if n_bad:
+                ins("amber", "⚠️", f"{n_bad} חודשים עם חוסר במלאי",
+                    "ההפרש מצביע על שימוש לא מתועד או פחת חריג.")
+
+    # ── הצגת קניות + שימושים לכל סוג דלק (גם ללא מאזן) ──
+    sec("קניות vs שימוש (לכל סוג דלק)")
+    rows = []
+    for ftype, icon, has_inv in FUEL_TYPES:
+        sub_chash = fuel_chash[fuel_chash["sub_category"] == ftype] if not fuel_chash.empty else pd.DataFrame()
+        purchases_nis = float(sub_chash["net_amount"].sum()) if not sub_chash.empty and "net_amount" in sub_chash.columns else 0
+
+        # שימוש בליטרים - רק לסולר צמ"ה (מ-solar.xlsx)
+        if ftype == "סולר צמ\"ה" and not solar.empty:
+            usage_l = float(solar["liters"].sum()) if "liters" in solar.columns else 0
+        else:
+            usage_l = None  # אין מקור אמין לבנזין/חשמל
+
+        rows.append({
+            "סוג דלק": f"{icon} {ftype}",
+            "קניות (₪)": round(purchases_nis, 0),
+            "שימוש (ל')": round(usage_l, 0) if usage_l is not None else "—",
+            "תנועות": len(sub_chash),
+            "מאזן פיזי": "✓ רלוונטי" if has_inv else "— לא נדרש",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── Reconciliation: chashbashevet vs fuel_invoices ──
+    sec("התאמה בין מקורות", meta="chashbashevet ↔ דוח רכש פריטים ↔ יומן שטח")
+    zmh_chash_total = float(fuel_chash[fuel_chash["sub_category"] == "סולר צמ\"ה"]["net_amount"].sum()) \
+        if "sub_category" in fuel_chash.columns and not fuel_chash.empty else 0
+    inv_book = load_fuel_invoices_data(project_id)
+    book_total = float(inv_book["total_cost"].sum()) if not inv_book.empty and "total_cost" in inv_book.columns else 0
+    field_solar_l = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0
+
+    recon_data = [
+        {"מקור": "כרטיס הנהלה (74327 סולר צמ\"ה)", "₪": round(zmh_chash_total, 0),
+         "ליטרים": "—", "תנועות": int((fuel_chash["sub_category"] == "סולר צמ\"ה").sum()) if "sub_category" in fuel_chash.columns else 0},
+        {"מקור": "דוח רכש פריטים (Book1)", "₪": round(book_total, 0),
+         "ליטרים": round(float(inv_book["liters"].sum()), 0) if not inv_book.empty and "liters" in inv_book.columns else 0,
+         "תנועות": len(inv_book)},
+        {"מקור": "יומן שטח (solar.xlsx)", "₪": "—",
+         "ליטרים": round(field_solar_l, 0), "תנועות": len(solar)},
+    ]
+    st.dataframe(pd.DataFrame(recon_data), use_container_width=True, hide_index=True)
+
+    if zmh_chash_total and book_total:
+        diff_pct = abs(book_total - zmh_chash_total) / zmh_chash_total * 100
+        if diff_pct > 5:
+            ins("amber", "⚠️", f"הפרש של {diff_pct:.1f}% בין כרטיס לדוח רכש",
+                f"כרטיס: ₪{zmh_chash_total:,.0f} | דוח רכש: ₪{book_total:,.0f} | "
+                f"הפרש: ₪{book_total - zmh_chash_total:+,.0f}. ייתכן מע\"מ או טווח תאריכים.")
+        else:
+            ins("green", "✓", f"התאמה טובה ({diff_pct:.1f}% הפרש)", "")
+
+    # ── רשימת רישומי מלאי קיימים (כולל עריכה/מחיקה) ──
+    if not inv_db.empty:
+        sec("רישומי מלאי שמורים")
+        disp = inv_db[["month", "fuel_type", "tank_id", "opening_l",
+                         "closing_l", "notes"]].copy()
+        disp.columns = ["חודש", "סוג דלק", "מזהה מיכל",
+                        "פתיחה (ל')", "סגירה (ל')", "הערות"]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+        del_id = st.number_input("מחק רישום לפי ID", min_value=0, step=1, value=0,
+                                    key=f"del_finv_{project_id}")
+        if st.button("🗑 מחק רישום", key=f"del_finv_btn_{project_id}",
+                       disabled=del_id <= 0):
+            if control_db.delete_fuel_inventory(int(del_id), project_id):
+                st.success("נמחק")
+                st.rerun()
+            else:
+                st.error("רישום לא נמצא")
 
 
 # ─── סולר וכלים → צריכת סולר לפי כלי ───────────────────────
