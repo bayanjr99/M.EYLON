@@ -127,24 +127,35 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
 
 
 def _render_add_project_card() -> None:
-    """כרטיס 'הוסף פרויקט' באותו גודל וצורה ככרטיסי הפרויקטים."""
+    """כרטיס 'הוסף פרויקט' באותו גובה ועיצוב ככרטיסי הפרויקטים.
+
+    מבנה מקביל לכרטיס פרויקט:
+    - section-card עם padding זהה (18px 22px)
+    - מבנה פנימי: כותרת למעלה + תוכן ממורכז + סיכום בתחתית
+    - גובה כולל ~265px כדי להתאים לפרויקט עם 4 KPIs
+    """
     import streamlit as st
-    # Card content (matches project card visual rhythm: ~200px content)
     st.markdown(
         """
         <div class="section-card" style="padding:18px 22px;display:flex;
-        flex-direction:column;align-items:center;justify-content:center;
-        text-align:center;border:2px dashed var(--brand-primary-mid);
-        background:var(--brand-primary-soft);min-height:215px">
-          <div style="display:flex;align-items:center;justify-content:center;
-            width:64px;height:64px;border-radius:50%;
-            background:var(--brand-primary);color:#fff;font-size:36px;
-            font-weight:700;line-height:1;margin-bottom:14px;
-            box-shadow:0 3px 10px rgba(22,163,74,.32)">+</div>
-          <div style="font-size:16px;font-weight:800;color:var(--brand-primary-dark);
-            line-height:1.3;margin-bottom:4px">הוסף פרויקט חדש</div>
-          <div style="font-size:11.5px;color:var(--ink-soft);line-height:1.4">
-            לחץ למטה כדי להגדיר פרויקט חדש
+        flex-direction:column;border:1.5px dashed var(--brand-primary-mid);
+        background:var(--brand-primary-soft);min-height:235px">
+          <!-- Header line (matches project card header alignment) -->
+          <div style="font-size:13px;font-weight:700;color:var(--brand-primary-dark);
+            letter-spacing:.3px;margin-bottom:4px">פרויקט חדש</div>
+          <div style="font-size:11.5px;color:var(--ink-soft);margin-bottom:18px">
+            ניתן להגדיר אתר, לקוח, סטטוס ותאריך התחלה
+          </div>
+          <!-- Centered circle + label (the eye-catching CTA) -->
+          <div style="flex:1;display:flex;flex-direction:column;
+            align-items:center;justify-content:center;text-align:center">
+            <div style="display:flex;align-items:center;justify-content:center;
+              width:58px;height:58px;border-radius:50%;
+              background:var(--brand-primary);color:#fff;font-size:32px;
+              font-weight:300;line-height:1;margin-bottom:10px;
+              box-shadow:0 3px 12px rgba(22,163,74,.32)">+</div>
+            <div style="font-size:14px;font-weight:800;color:var(--brand-primary-dark);
+              line-height:1.2">הוסף פרויקט</div>
           </div>
         </div>
         """,
