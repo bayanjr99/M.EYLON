@@ -21,6 +21,9 @@ data/project_control.sqlite-journal
 data/project_control.sqlite-wal
 data/project_control.sqlite-shm
 
+# Database backups directory — local-only, can grow large.
+data/backups/
+
 # Outputs
 output/
 logs/

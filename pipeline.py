@@ -227,12 +227,24 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
 
     out: dict[str, pd.DataFrame] = {}
 
+    def _log(path: Path | None, file_type: str, rows: int) -> None:
+        """רישום ייבוא ל-imported_files - בטוח לכשלון (לא קריטי לפייפליין)."""
+        if not path:
+            return
+        try:
+            from core import storage
+            storage.save_imported_file(path, project_id, month, file_type,
+                                         rows_loaded=rows, status="imported")
+        except Exception as e:
+            logger.warning("storage logging failed for %s: %s", path, e)
+
     chash_path = _find_file(month_dir, ["chashbashevet", "כרטיס"], "chashbashevet.xlsx")
     out["chashbashevet"] = (
         chashbashevet_loader.load_chashbashevet(chash_path)
         if chash_path
         else pd.DataFrame(columns=chashbashevet_loader.OUTPUT_COLS)
     )
+    _log(chash_path, "chashbashevet", len(out["chashbashevet"]))
 
     solar_path = _find_file(month_dir, ["solar", "סולר", "תדלוק"], "solar.xlsx")
     out["solar"] = (
@@ -240,6 +252,7 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
         if solar_path
         else pd.DataFrame(columns=solar_loader.OUTPUT_COLS)
     )
+    _log(solar_path, "solar", len(out["solar"]))
 
     hours_path = _find_file(month_dir, ["hours", "שעות"], "hours.xlsx")
     out["hours"] = (
@@ -247,6 +260,7 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
         if hours_path
         else pd.DataFrame(columns=hours_loader.OUTPUT_COLS)
     )
+    _log(hours_path, "hours", len(out["hours"]))
 
     # מאזן מלאי סולר (אופציונלי)
     inv_path = _find_file(month_dir, ["fuel_inventory", "מלאי סולר", "מלאי"],
@@ -256,6 +270,7 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
         if inv_path
         else pd.DataFrame(columns=fuel_inventory.OUTPUT_COLS)
     )
+    _log(inv_path, "fuel_inventory", len(out["fuel_inventory"]))
 
     logger.info(
         "Loaded %s/%s: chash=%d, solar=%d, hours=%d",

@@ -132,6 +132,48 @@ CREATE TABLE IF NOT EXISTS maintenance_logs (
 CREATE INDEX IF NOT EXISTS idx_maint_proj_month ON maintenance_logs(project_id, month);
 CREATE INDEX IF NOT EXISTS idx_maint_license    ON maintenance_logs(license_num);
 
+-- Import history with content-hash dedup
+CREATE TABLE IF NOT EXISTS imported_files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT NOT NULL,
+    month           TEXT,
+    file_name       TEXT NOT NULL,
+    file_path       TEXT,
+    file_hash       TEXT UNIQUE,    -- SHA-256 of file content; same content = same import
+    file_type       TEXT,           -- chashbashevet / balance / solar / hours / site_tracking / ...
+    file_size_kb    INTEGER,
+    rows_loaded     INTEGER DEFAULT 0,
+    error_count     INTEGER DEFAULT 0,
+    status          TEXT DEFAULT 'imported',  -- imported / failed / skipped
+    error_message   TEXT,
+    imported_at     TEXT NOT NULL,
+    imported_by     TEXT DEFAULT 'user'
+);
+CREATE INDEX IF NOT EXISTS idx_imp_proj_month ON imported_files(project_id, month);
+CREATE INDEX IF NOT EXISTS idx_imp_hash       ON imported_files(file_hash);
+CREATE INDEX IF NOT EXISTS idx_imp_time       ON imported_files(imported_at);
+
+-- QA findings — persisted so user can mark "resolved" and track history
+CREATE TABLE IF NOT EXISTS data_quality_issues (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT NOT NULL,
+    month           TEXT,
+    check_type      TEXT NOT NULL,   -- unmapped_account / orphan_supplier / duplicate / fuel_no_tool / ...
+    severity        TEXT,            -- high / medium / low
+    entity          TEXT,            -- account_num / supplier / license_num / ...
+    details         TEXT,
+    estimated_impact_nis REAL,
+    status          TEXT DEFAULT 'open',  -- open / reviewed / resolved / dismissed
+    resolved_at     TEXT,
+    resolved_by     TEXT,
+    notes           TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dq_proj_month ON data_quality_issues(project_id, month);
+CREATE INDEX IF NOT EXISTS idx_dq_status     ON data_quality_issues(status);
+CREATE INDEX IF NOT EXISTS idx_dq_check      ON data_quality_issues(check_type);
+
 -- Fleet-wide tools registry (NOT per-project — same fleet works across sites).
 -- Mirrors data/tools_registry.xlsx but mutable from the UI.
 CREATE TABLE IF NOT EXISTS tools_registry (

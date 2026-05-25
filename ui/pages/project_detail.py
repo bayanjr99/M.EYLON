@@ -1681,52 +1681,67 @@ def _subtab_cost_per_hour(df: pd.DataFrame, project_meta: dict) -> None:
 
 # ─── ייבוא ועדכון → היסטוריית ייבוא ────────────────────────
 def _subtab_import_history(project_meta: dict) -> None:
-    """רשימת קבצים שיובאו: סריקת תיקיות הפרויקט."""
-    sec("היסטוריית ייבוא", meta="סריקת data/projects/<id>/")
-    from pipeline import PROJECTS_ROOT
-    from datetime import datetime
+    """רשימת קבצים שיובאו - מ-storage.imported_files (SQLite) + יכולת מחיקת חודש."""
+    from core import storage
     project_id = project_meta["project_id"]
-    project_dir = PROJECTS_ROOT / project_id
-    if not project_dir.exists():
-        st.caption("תיקיית פרויקט לא קיימת.")
-        return
 
-    rows = []
-    for month_dir in sorted(project_dir.iterdir()):
-        if not month_dir.is_dir():
-            continue
-        for f in month_dir.iterdir():
-            if not f.is_file() or f.suffix.lower() not in (".xlsx", ".xls"):
-                continue
-            if f.name.startswith("~$"):
-                continue
-            stat = f.stat()
-            rows.append({
-                "חודש": month_dir.name,
-                "שם קובץ": f.name,
-                "גודל (KB)": stat.st_size // 1024,
-                "תאריך עדכון": datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M"),
-            })
-    # Project-wide files
-    for f in project_dir.iterdir():
-        if not f.is_file() or f.suffix.lower() not in (".xlsx", ".xls"):
-            continue
-        if f.name.startswith("~$"):
-            continue
-        stat = f.stat()
-        rows.append({
-            "חודש": "—",
-            "שם קובץ": f.name,
-            "גודל (KB)": stat.st_size // 1024,
-            "תאריך עדכון": datetime.fromtimestamp(stat.st_mtime).strftime("%d/%m/%Y %H:%M"),
-        })
-
-    if not rows:
-        st.caption("לא נמצאו קבצים בתיקיית הפרויקט.")
+    sec("היסטוריית ייבוא", meta="מ-imported_files (SQLite)")
+    files = storage.list_imported_files(project_id)
+    if files.empty:
+        ins("blue", "ℹ️", "אין רישומי ייבוא ב-SQLite",
+            "הרץ <code>python -c \"from pipeline import build_master; build_master()\"</code> "
+            "כדי לרשום את הקבצים הקיימים.")
     else:
-        df_h = pd.DataFrame(rows)
-        st.dataframe(df_h, use_container_width=True, hide_index=True)
-        st.caption(f"{len(df_h)} קבצים בסה\"כ.")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("קבצים", str(len(files)))
+        c2.metric("חודשים", str(files["month"].nunique()))
+        c3.metric("סה\"כ שורות נטענו", f"{files['rows_loaded'].sum():,}")
+        c4.metric("שגיאות", str(int(files["error_count"].sum())))
+
+        cols = ["imported_at", "month", "file_type", "file_name", "rows_loaded",
+                "file_size_kb", "status", "imported_by"]
+        cols = [c for c in cols if c in files.columns]
+        disp = files[cols].copy()
+        heb = {"imported_at": "תאריך ייבוא", "month": "חודש", "file_type": "סוג",
+               "file_name": "שם קובץ", "rows_loaded": "שורות נטענו",
+               "file_size_kb": "גודל KB", "status": "סטטוס", "imported_by": "משתמש"}
+        disp.columns = [heb.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── מחיקת חודש מלא מהמערכת ──
+    sec("מחיקת חודש מהמערכת", meta="מסיר רשומות מ-SQLite (אופציונלית גם קבצים)")
+    months = sorted(files["month"].dropna().unique().tolist()) if not files.empty else []
+    if not months:
+        from pipeline import list_available_months
+        months = list_available_months(project_id)
+
+    col_m, col_b, col_files = st.columns([2, 1, 2])
+    with col_m:
+        del_month = st.selectbox("חודש למחיקה", [""] + months, key="del_month_sel")
+    with col_files:
+        delete_files = st.checkbox("מחק גם את קבצי ה-xlsx", key="del_files_chk", value=False)
+    with col_b:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        confirm_key = f"del_confirm_{project_id}_{del_month}"
+        if not st.session_state.get(confirm_key):
+            if st.button("⚠️ הכן מחיקה",
+                          disabled=not del_month, key="del_prep",
+                          type="secondary", use_container_width=True):
+                st.session_state[confirm_key] = True
+                st.rerun()
+        else:
+            if st.button("🗑 אשר מחיקה", key="del_confirm",
+                          type="primary", use_container_width=True):
+                result = storage.delete_project_month(
+                    project_id, del_month, delete_files=delete_files,
+                )
+                st.success(f"נמחק: {result}")
+                st.session_state.pop(confirm_key, None)
+                st.cache_data.clear()
+                st.rerun()
+    if del_month and st.session_state.get(confirm_key):
+        st.warning(f"⚠️ עומד למחוק את כל נתוני {project_id} / {del_month}. "
+                   f"לחץ 'אשר מחיקה' להמשך, או refresh לביטול.")
 
 
 # ─── ייבוא ועדכון → גיבוי וייצוא ───────────────────────────
@@ -1735,21 +1750,39 @@ def _subtab_backup_export(project_meta: dict) -> None:
     from io import BytesIO
     from datetime import datetime
     from pathlib import Path
+    from core import storage
     project_id = project_meta["project_id"]
 
-    sec("גיבוי בסיסי הנתונים")
-    DB_CONTROL = Path(__file__).resolve().parent.parent.parent / "data" / "project_control.sqlite"
-    if DB_CONTROL.exists():
-        with open(DB_CONTROL, "rb") as f:
-            data = f.read()
-        st.download_button(
-            f"⬇️ הורד גיבוי project_control.sqlite ({len(data) // 1024} KB)",
-            data=data,
-            file_name=f"project_control_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.sqlite",
-            mime="application/x-sqlite3",
-        )
-    else:
-        st.caption("project_control.sqlite לא קיים עדיין.")
+    sec("גיבוי בסיסי הנתונים", meta="data/backups/")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        if st.button("📥 צור גיבוי מלא עכשיו", key="run_backup",
+                       type="primary", use_container_width=True):
+            backups = storage.backup_database()
+            st.success(f"נוצרו {len(backups)} קובצי גיבוי ב-data/backups/")
+            for name, path in backups.items():
+                st.caption(f"  • {name} → {path.name}")
+            st.rerun()
+    with c2:
+        # Direct download of current SQLite
+        if storage.DB_CONTROL.exists():
+            with open(storage.DB_CONTROL, "rb") as f:
+                data = f.read()
+            st.download_button(
+                f"⬇️ הורד SQLite נוכחי ({len(data) // 1024} KB)",
+                data=data,
+                file_name=f"project_control_{datetime.now().strftime('%Y%m%d_%H%M')}.sqlite",
+                mime="application/x-sqlite3",
+                use_container_width=True,
+            )
+
+    # רשימת גיבויים שמורים
+    backups_list = storage.list_backups()
+    if not backups_list.empty:
+        with st.expander(f"היסטוריית גיבויים ({len(backups_list)})"):
+            disp = backups_list.copy()
+            disp.columns = ["שם קובץ", "גודל (KB)", "תאריך"]
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
     sec("ייצוא נתוני פרויקט לאקסל")
     if st.button("📊 צור קובץ Excel עם כל נתוני הפרויקט", key="export_xlsx"):
