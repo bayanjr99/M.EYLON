@@ -52,6 +52,10 @@ COL_CREDIT = 15        # P - זכות
 OUTPUT_COLS = [
     "account_num", "account_name", "date", "details",
     "debit", "credit", "amount", "supplier",
+    # 7 שדות סיווג מ-classify_transaction
+    "account_type", "main_category", "sub_category",
+    "net_amount", "signed_amount", "is_credit_note",
+    "classification_confidence", "classification_note",
 ]
 
 _TOTAL_KEYWORDS = ("סה\"כ", "סהכ", "סה'כ", "יתרה")
@@ -122,6 +126,13 @@ def load_chashbashevet(file_path: str | Path) -> pd.DataFrame:
         else:
             supplier = _extract_supplier(details)
 
+        # סיווג מלא: account_type / main_category / sub_category / net_amount /
+        # is_credit_note / confidence / note — לפי המפרט החדש
+        from core.categorizer import classify_transaction
+        cls = classify_transaction(
+            current_account_num, current_account_name, details, debit, credit,
+        )
+
         records.append({
             "account_num": current_account_num,
             "account_name": current_account_name,
@@ -131,6 +142,15 @@ def load_chashbashevet(file_path: str | Path) -> pd.DataFrame:
             "credit": credit,
             "amount": amount,
             "supplier": supplier,
+            # שדות חדשים מ-classify_transaction
+            "account_type": cls["account_type"],
+            "main_category": cls["main_category"],
+            "sub_category": cls["sub_category"],
+            "net_amount": cls["net_amount"],
+            "signed_amount": cls["signed_amount"],
+            "is_credit_note": cls["is_credit_note"],
+            "classification_confidence": cls["classification_confidence"],
+            "classification_note": cls["classification_note"],
         })
 
     df = pd.DataFrame(records, columns=OUTPUT_COLS)

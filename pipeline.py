@@ -50,6 +50,10 @@ MASTER_SCHEMA_COLS = [
     "amount", "source", "anomaly_flags",
     # debit/credit הפרטניים מחשבשבת (שומר את הפיצול לצורך reconciliation)
     "debit", "credit",
+    # שדות סיווג מ-classify_transaction (תקפים רק לשורות chashbashevet)
+    "account_type", "main_category", "sub_category",
+    "net_amount", "signed_amount", "is_credit_note",
+    "classification_confidence", "classification_note",
     # סולר
     "license_num", "tool_name", "liters", "engine_hours",
     # שעות
@@ -385,8 +389,9 @@ def aggregate_month(
             "project_name": project_name,
             "month": month,
             "date": chash["date"],
-            "category": chash["category"],
-            "subcategory": chash["subcategory"],
+            # category/subcategory תאימות לאחור: מעתה ערכי main_category/sub_category
+            "category": chash.get("main_category", chash.get("category", "")),
+            "subcategory": chash.get("sub_category", chash.get("subcategory", "")),
             "account_num": chash["account_num"],
             "account_name": chash["account_name"],
             "supplier": chash["supplier"],
@@ -394,6 +399,15 @@ def aggregate_month(
             "amount": chash["amount"],
             "debit": chash["debit"],
             "credit": chash["credit"],
+            # שדות סיווג חדשים
+            "account_type": chash.get("account_type", "unknown"),
+            "main_category": chash.get("main_category", ""),
+            "sub_category": chash.get("sub_category", ""),
+            "net_amount": chash.get("net_amount", chash["amount"]),
+            "signed_amount": chash.get("signed_amount", chash["amount"]),
+            "is_credit_note": chash.get("is_credit_note", False),
+            "classification_confidence": chash.get("classification_confidence", "high"),
+            "classification_note": chash.get("classification_note", ""),
             "source": "chashbashevet",
             "anomaly_flags": "",
         })

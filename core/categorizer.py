@@ -105,6 +105,146 @@ def categorize(account_num: int, account_name: str = "") -> tuple[str, str]:
     return _classify_by_range(acct)
 
 
+# ── Fuel sub-classification by description ────────────────────
+# חשבון 74327 = סולר צמ"ה (תמיד)
+# חשבון 74317 = רכבים (סולר/בנזין/חשמל) - תלוי בתיאור
+FUEL_ZMH_ACCOUNT = 74327
+FUEL_MIXED_ACCOUNT = 74317
+
+_FUEL_ELECTRIC_KW = ["טעינת רכב חשמלי", "רכב חשמלי", "אפקון", "תחבורה חשמלית"]
+_FUEL_BENZIN_KW = ["בנזין"]
+_FUEL_SOLAR_KW = ["סולר"]
+
+
+def _classify_fuel_subcategory(account_num: int | None,
+                                description: str) -> tuple[str, str, str, str] | None:
+    """Returns (main_category, sub_category, confidence, note) for fuel
+    accounts; None if not a fuel account.
+
+    כללי הספק:
+      74327 → סולר צמ"ה (תמיד, high confidence)
+      74317 → לפי תיאור:
+        טעינת רכב חשמלי / אפקון → טעינת חשמל רכבים
+        בנזין                  → בנזין רכבים
+        סולר                   → סולר רכבים
+        אחר ("דלק" סתם)        → דלק לא מסווג (low confidence)
+    """
+    if account_num == FUEL_ZMH_ACCOUNT:
+        return ("דלק ואנרגיה", "סולר צמ\"ה", "high", "חשבון 74327 = סולר צמ\"ה")
+    if account_num != FUEL_MIXED_ACCOUNT:
+        return None
+    desc = (description or "").strip()
+    if any(kw in desc for kw in _FUEL_ELECTRIC_KW):
+        return ("דלק ואנרגיה", "טעינת חשמל רכבים", "high",
+                "תיאור מציין רכב חשמלי / אפקון")
+    if any(kw in desc for kw in _FUEL_BENZIN_KW):
+        return ("דלק ואנרגיה", "בנזין רכבים", "high", "תיאור מציין בנזין")
+    if any(kw in desc for kw in _FUEL_SOLAR_KW):
+        return ("דלק ואנרגיה", "סולר רכבים", "high", "תיאור מציין סולר")
+    if "דלק" in desc:
+        return ("דלק ואנרגיה", "דלק לא מסווג", "low",
+                "תיאור מציין 'דלק' בלי פירוט סולר/בנזין/חשמל")
+    return ("דלק ואנרגיה", "דלק לא מסווג", "low",
+            "לא ניתן לזהות סוג דלק מהתיאור")
+
+
+# ── Account type detection ────────────────────────────────────
+_REVENUE_KEYWORDS = ["הכנסות", "מכירות"]
+_EXPENSE_KEYWORDS = ["הוצאות", "הוצאה", "חיוב", "עלות"]
+
+
+def _detect_account_type(account_num: int | None, account_name: str | None) -> str:
+    """Detect account_type by account_num + name.
+
+    Returns: revenue / expense / asset / liability / unknown.
+    """
+    from core.chashbashevet_loader import INCOME_ACCOUNTS
+    name = (account_name or "").strip()
+
+    # Revenue accounts (hard set + name keyword)
+    if account_num in INCOME_ACCOUNTS:
+        return "revenue"
+    if any(kw in name for kw in _REVENUE_KEYWORDS):
+        # Income usually starts with "הכנסות". But many expense accounts
+        # also contain "הוצאות" — that gets caught below. We do this in order:
+        # "הכנסות" check first because if it has both, the income is more
+        # specific (e.g., "הכנסות זקופות").
+        return "revenue"
+
+    # Expense accounts
+    if any(kw in name for kw in _EXPENSE_KEYWORDS):
+        return "expense"
+    if account_num is not None and 7000 <= account_num <= 9999999999:
+        return "expense"
+    if account_num is not None and 5000 <= account_num <= 5999:
+        return "asset"
+    if account_num is not None and 6000 <= account_num <= 6999:
+        return "liability"
+    return "unknown"
+
+
+def classify_transaction(account_num: int | None, account_name: str | None,
+                          description: str = "", debit: float = 0.0,
+                          credit: float = 0.0) -> dict:
+    """סיווג מלא של תנועה. מחזיר dict עם 7 שדות לפי המפרט.
+
+    שדות מוחזרים:
+        account_type, main_category, sub_category,
+        signed_amount, net_amount, is_credit_note,
+        classification_confidence, classification_note.
+
+    לוגיקת net_amount:
+        revenue: credit - debit  (חיובי = הכנסה אמיתית)
+        expense: debit - credit  (חיובי = הוצאה אמיתית)
+        unknown: debit - credit  (ברירת מחדל)
+    """
+    acct_int = None
+    if account_num is not None:
+        try:
+            acct_int = int(account_num)
+        except (TypeError, ValueError):
+            pass
+
+    debit_f = float(debit or 0)
+    credit_f = float(credit or 0)
+
+    # 1. account_type
+    account_type = _detect_account_type(acct_int, account_name)
+
+    # 2. main_category + sub_category — try fuel override first
+    fuel = _classify_fuel_subcategory(acct_int, description)
+    if fuel is not None:
+        main_cat, sub_cat, confidence, note = fuel
+    else:
+        main_cat, sub_cat = categorize(acct_int or 0, account_name or "")
+        fallback_cats = {"אחר", "הוצאות תפעוליות", "הוצאות פרויקט",
+                          "הוצאות שכר/כלליות"}
+        confidence = "low" if main_cat in fallback_cats else "high"
+        note = "מתוך מיפוי קטגוריות" if main_cat not in fallback_cats else "ברירת מחדל לפי טווח חשבון"
+
+    # 3. net_amount + signed_amount
+    if account_type == "revenue":
+        net = credit_f - debit_f
+        is_credit_note = debit_f > 0 and credit_f == 0
+    elif account_type == "expense":
+        net = debit_f - credit_f
+        is_credit_note = credit_f > 0 and debit_f == 0
+    else:
+        net = debit_f - credit_f
+        is_credit_note = False
+
+    return {
+        "account_type": account_type,
+        "main_category": main_cat,
+        "sub_category": sub_cat,
+        "signed_amount": round(net, 2),
+        "net_amount": round(net, 2),
+        "is_credit_note": is_credit_note,
+        "classification_confidence": confidence,
+        "classification_note": note,
+    }
+
+
 def categorize_dataframe(df: pd.DataFrame, account_col: str = "account_num",
                          name_col: str = "account_name") -> pd.DataFrame:
     """מוסיף עמודות category + subcategory ל-DataFrame קיים.

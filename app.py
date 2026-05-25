@@ -40,7 +40,7 @@ from ui.styles import LOADING_VEIL, MAIN_CSS
 # ═══ PAGE CONFIG ═══════════════════════════════════════════
 st.set_page_config(
     page_title='מ. אילון אביב נכסים בע"מ — מערכת ביקורת פרויקטים',
-    page_icon="static/meylon_aviv_logo.png",
+    page_icon="static/maylon_aviv_icon.ico",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -115,7 +115,7 @@ render_top_bar(
     status=_status,
     status_text=_status_txt,
     meta_text=_meta,
-    logo_path="static/meylon_aviv_logo.png",
+    logo_path="static/maylon_aviv_icon.ico",
 )
 
 

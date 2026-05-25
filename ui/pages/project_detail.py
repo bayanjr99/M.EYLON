@@ -1332,6 +1332,102 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
                             "description", "amount"] if c in unclassified_income.columns]
         st.dataframe(unclassified_income[cols], use_container_width=True, hide_index=True)
 
+    # ════════════════════════════════════════════════════════
+    # סיווג ואיכות נתונים (לפי המפרט החדש)
+    # ════════════════════════════════════════════════════════
+    if "main_category" not in chash.columns:
+        ins("amber", "⚠️", "בנה מאסטר מחדש לקבלת בדיקות סיווג",
+            "<code>python -c \"from pipeline import build_master; build_master()\"</code>")
+        return
+
+    # ── 6. דלק לא מסווג ──
+    sec("דלק לא מסווג", meta="תיאור כולל 'דלק' בלי פירוט סולר/בנזין/חשמל")
+    unc_fuel = chash[chash["sub_category"] == "דלק לא מסווג"]
+    if unc_fuel.empty:
+        ins("green", "✓", "כל הדלק מסווג", "אין תנועות דלק עמומות.")
+    else:
+        st.caption(f"{len(unc_fuel)} תנועות. בדוק את התיאור והוסף keywords אם חסר.")
+        cols = [c for c in ["date", "account_num", "supplier", "description",
+                            "net_amount", "classification_note"] if c in unc_fuel.columns]
+        heb = {"date": "תאריך", "account_num": "חשבון", "supplier": "ספק",
+               "description": "פרטים", "net_amount": "סכום (₪)",
+               "classification_note": "הסבר"}
+        disp = unc_fuel[cols].copy()
+        if "net_amount" in disp.columns:
+            disp["net_amount"] = disp["net_amount"].round(0)
+        disp.columns = [heb.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── 7. זיכויים בהוצאות (לוודא שלא נספרו כהכנסה) ──
+    sec("זיכויים בהוצאות", meta="זכות בכרטיס הוצאה = הקטנת הוצאה, לא הכנסה")
+    exp_credits = chash[(chash["account_type"] == "expense") & (chash["is_credit_note"] == True)]
+    if exp_credits.empty:
+        ins("green", "✓", "אין זיכויים בהוצאות", "")
+    else:
+        st.caption(f"{len(exp_credits)} זיכויים - הם הקטינו את ההוצאה הרלוונטית (לא נספרו כהכנסה).")
+        cols = [c for c in ["date", "account_num", "account_name", "supplier",
+                            "description", "credit", "net_amount", "sub_category"]
+                if c in exp_credits.columns]
+        heb = {"date": "תאריך", "account_num": "חשבון", "account_name": "שם חשבון",
+               "supplier": "ספק", "description": "פרטים", "credit": "זכות",
+               "net_amount": "נטו (₪)", "sub_category": "תת-קטגוריה"}
+        disp = exp_credits[cols].copy()
+        for c in ("credit", "net_amount"):
+            if c in disp.columns:
+                disp[c] = disp[c].round(0)
+        disp.columns = [heb.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── 8. זיכויים בהכנסות (חובה בכרטיס הכנסות = הקטנת הכנסה) ──
+    sec("זיכויים/תיקונים בהכנסות", meta="חובה בכרטיס הכנסות = הקטנת הכנסה, לא הוצאה")
+    inc_credits = chash[(chash["account_type"] == "revenue") & (chash["is_credit_note"] == True)]
+    if inc_credits.empty:
+        ins("green", "✓", "אין זיכויים בהכנסות", "")
+    else:
+        st.caption(f"{len(inc_credits)} זיכויים - הם הקטינו את ההכנסה הרלוונטית (לא נספרו כהוצאה).")
+        cols = [c for c in ["date", "account_num", "account_name",
+                            "description", "debit", "net_amount"]
+                if c in inc_credits.columns]
+        heb = {"date": "תאריך", "account_num": "חשבון", "account_name": "שם חשבון",
+               "description": "פרטים", "debit": "חובה", "net_amount": "נטו (₪)"}
+        disp = inc_credits[cols].copy()
+        for c in ("debit", "net_amount"):
+            if c in disp.columns:
+                disp[c] = disp[c].round(0)
+        disp.columns = [heb.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── 9. חשבונות הכנסה שזוהו ──
+    sec("חשבונות הכנסה שזוהו")
+    rev_accounts = chash[chash["account_type"] == "revenue"].groupby(
+        ["account_num", "account_name"]
+    ).agg(
+        n_tx=("amount", "size"),
+        net_total=("net_amount", "sum"),
+    ).reset_index().round(0)
+    if rev_accounts.empty:
+        ins("amber", "⚠️", "לא זוהו חשבונות הכנסה",
+            "ודא שהכרטיס כולל חשבונות עם 'הכנסות' בשם או מספרי 927/951/7367.")
+    else:
+        rev_accounts.columns = ["מס' חשבון", "שם חשבון", "מס' תנועות", "נטו (₪)"]
+        st.dataframe(rev_accounts.sort_values("נטו (₪)", ascending=False),
+                     use_container_width=True, hide_index=True)
+
+    # ── 10. חשבונות דלק ואנרגיה - פירוט ──
+    sec("פילוח דלק ואנרגיה לפי תת-קטגוריה")
+    fuel_rows = chash[chash["main_category"] == "דלק ואנרגיה"]
+    if fuel_rows.empty:
+        st.caption("אין תנועות בקטגוריית 'דלק ואנרגיה'.")
+    else:
+        fuel_agg = fuel_rows.groupby("sub_category").agg(
+            n_tx=("amount", "size"),
+            net_total=("net_amount", "sum"),
+            n_suppliers=("supplier", lambda s: s[s != ""].nunique()),
+        ).reset_index().round(0)
+        fuel_agg.columns = ["תת-קטגוריה", "תנועות", "סכום נטו (₪)", "ספקים"]
+        st.dataframe(fuel_agg.sort_values("סכום נטו (₪)", ascending=False),
+                     use_container_width=True, hide_index=True)
+
 
 # ════════════════════════════════════════════════════════════
 # SUB-TABS חדשים למבנה המקצועי (8 ראשיים)
@@ -1648,11 +1744,86 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
 
 # ─── סולר וכלים → קניות סולר ───────────────────────────────
 def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
-    """קניות סולר - 3 מקורות: דוח רכש פריטים (חשבונית-לחשבונית), חשבשבת, ידני."""
+    """קניות סולר - הפרדה לפי סוג דלק (סולר צמ"ה/רכבים/בנזין/חשמל) + מקורות שונים."""
     from pipeline import load_fuel_invoices_data
     from core.fuel_invoices_loader import summary_by_supplier, summary_by_month
 
-    # ── מקור 1 (העיקרי): דוח רכש פריטים - חשבונית-לחשבונית ──
+    # ── ראש: 5 כרטיסים לפי סוג דלק ──
+    sec("פילוח דלק ואנרגיה לפי סוג", meta="מבוסס על account_type + description")
+    chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
+    if "main_category" not in chash.columns:
+        # parquet ישן - לא מכיל את השדות החדשים
+        ins("amber", "⚠️", "צריך לבנות מאסטר מחדש",
+            "הרץ <code>python -c \"from pipeline import build_master; build_master()\"</code> "
+            "כדי לקבל את הפרדת סוגי הדלק.")
+    else:
+        fuel = chash[chash["main_category"] == "דלק ואנרגיה"]
+        if fuel.empty:
+            st.caption("אין תנועות בקטגוריית 'דלק ואנרגיה'.")
+        else:
+            # 5 כרטיסים
+            FUEL_TYPES = ["סולר צמ\"ה", "סולר רכבים", "בנזין רכבים",
+                          "טעינת חשמל רכבים", "דלק לא מסווג"]
+            ICONS = {"סולר צמ\"ה": "🚜", "סולר רכבים": "🚗",
+                     "בנזין רכבים": "⛽", "טעינת חשמל רכבים": "🔌",
+                     "דלק לא מסווג": "❓"}
+            total_fuel = float(fuel["net_amount"].sum())
+            cols = st.columns(5)
+            for col, ft in zip(cols, FUEL_TYPES):
+                sub = fuel[fuel["sub_category"] == ft]
+                amt = float(sub["net_amount"].sum())
+                n = len(sub)
+                pct = (amt / total_fuel * 100) if total_fuel else 0
+                with col:
+                    bg = "#FFFBEB" if ft == "דלק לא מסווג" and n > 0 else "#F0FDF4"
+                    border = "#FDE68A" if ft == "דלק לא מסווג" and n > 0 else "#BBF7D0"
+                    st.markdown(
+                        f"""<div style="background:{bg};border:1px solid {border};
+                        border-radius:10px;padding:14px 12px;text-align:center">
+                          <div style="font-size:22px">{ICONS[ft]}</div>
+                          <div style="font-size:11px;font-weight:700;color:#475569;
+                            margin:4px 0">{ft}</div>
+                          <div style="font-size:18px;font-weight:800;color:#0F172A">
+                            ₪{amt:,.0f}</div>
+                          <div style="font-size:10px;color:#64748B;margin-top:4px">
+                            {n} תנועות · {pct:.1f}%</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+            # פירוט לפי סוג דלק
+            for ft in FUEL_TYPES:
+                sub = fuel[fuel["sub_category"] == ft]
+                if sub.empty:
+                    continue
+                with st.expander(f"{ICONS[ft]} {ft} · ₪{sub['net_amount'].sum():,.0f} · {len(sub)} תנועות"):
+                    # ספקים עיקריים
+                    if "supplier" in sub.columns:
+                        sup = sub[sub["supplier"] != ""].groupby("supplier")["net_amount"].agg(
+                            ["sum", "count"]).reset_index()
+                        if not sup.empty:
+                            sup.columns = ["ספק", "סה\"כ (₪)", "תנועות"]
+                            sup["סה\"כ (₪)"] = sup["סה\"כ (₪)"].round(0)
+                            st.markdown("**ספקים עיקריים**")
+                            st.dataframe(sup.sort_values("סה\"כ (₪)", ascending=False),
+                                         use_container_width=True, hide_index=True)
+                    # פירוט תנועות
+                    show_cols = [c for c in ["date", "month", "supplier", "description",
+                                              "debit", "credit", "net_amount"]
+                                  if c in sub.columns]
+                    heb = {"date": "תאריך", "month": "חודש", "supplier": "ספק",
+                           "description": "פרטים", "debit": "חובה",
+                           "credit": "זכות", "net_amount": "סכום נטו"}
+                    disp = sub[show_cols].copy().sort_values(
+                        "date" if "date" in show_cols else show_cols[0])
+                    for c in ("debit", "credit", "net_amount"):
+                        if c in disp.columns:
+                            disp[c] = disp[c].round(0)
+                    disp.columns = [heb.get(c, c) for c in show_cols]
+                    st.markdown("**פירוט תנועות**")
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── מקור 2 (לשעבר היה ראשי): דוח רכש פריטים - חשבונית-לחשבונית ──
     sec("חשבוניות סולר ברמת פירוט", meta="מ-fuel_invoices.xlsx (דוח רכש פריטים)")
     inv = load_fuel_invoices_data(project_meta["project_id"])
     if inv.empty:
