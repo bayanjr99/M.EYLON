@@ -136,93 +136,122 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     )
     st.markdown(period_html, unsafe_allow_html=True)
 
-    # ── 8 טאבים ראשיים מאורגנים לפי תחומים ─────────────────
+    # ── ADMIN MODE: ייבוא/תקציב/בדיקות פותחים תצוגה נפרדת ──
+    admin_view = st.session_state.get("admin_view")
+    if admin_view:
+        if st.button("← חזרה לטאבים הראשיים", key="back_from_admin",
+                       use_container_width=False):
+            st.session_state.pop("admin_view", None)
+            st.rerun()
+        if admin_view == "import":
+            sub = st.tabs(["ייבוא קבצים", "היסטוריית ייבוא", "גיבוי וייצוא"])
+            with sub[0]:
+                from ui.pages.import_data import render_import_page
+                from pipeline import list_available_projects
+                render_import_page(list_available_projects())
+            with sub[1]:
+                _subtab_import_history(project_meta)
+            with sub[2]:
+                _subtab_backup_export(project_meta)
+        elif admin_view == "budget":
+            from ui.pages.budget import render_budget_tab
+            render_budget_tab(df, project_meta)
+        elif admin_view == "qa":
+            _tab_qa(df, project_meta)
+        return
+
+    # ── HEADER: 3 כפתורי ניהול (לא טאבים) ──
+    adm1, adm2, adm3, _ = st.columns([1, 1, 1, 4])
+    with adm1:
+        if st.button("📁 ייבוא נתונים", key="admin_import",
+                       use_container_width=True):
+            st.session_state["admin_view"] = "import"
+            st.rerun()
+    with adm2:
+        if st.button("📈 תקציב מול ביצוע", key="admin_budget",
+                       use_container_width=True):
+            st.session_state["admin_view"] = "budget"
+            st.rerun()
+    with adm3:
+        if st.button("🔍 בדיקות וחריגות", key="admin_qa",
+                       use_container_width=True):
+            st.session_state["admin_view"] = "qa"
+            st.rerun()
+
+    # ── 5 טאבים ראשיים בלבד ──
     tabs = st.tabs([
         "📊 סקירה כללית",
         "💰 כספים",
-        "🏗️ תפעול ושטח",
-        "⛽ סולר וכלים",
-        "🏢 ספקים וקבלנים",
-        "📈 תקציב מול ביצוע",
-        "🔍 בדיקות וחריגות",
-        "📁 ייבוא ועדכון נתונים",
+        "⛽ סולר",
+        "🕒 שעות עבודה",
+        "🚜 כלים",
     ])
 
     with tabs[0]:
         _tab_overview(df, summary)
 
     with tabs[1]:
-        # כספים: 5 sub-tabs
-        sub = st.tabs(["הכנסות", "הוצאות", "פירוט תנועות",
-                        "חשבונות חשבשבת", "גבייה"])
+        # כספים: 3 sub-tabs
+        sub = st.tabs(["הכנסות", "הוצאות", "פירוט תנועות"])
         with sub[0]:
             _tab_income(df)
         with sub[1]:
             _tab_expenses(df)
         with sub[2]:
             _tab_transactions(df)
-        with sub[3]:
-            _subtab_accounts_rollup(df, project_meta)
-        with sub[4]:
-            _subtab_collection_status(df)
 
     with tabs[2]:
-        # תפעול ושטח: 4 sub-tabs
-        sub = st.tabs(["יומן אתר", "שעות עבודה כלים", "עובדים", "קבלני משנה בשטח"])
-        with sub[0]:
-            _subtab_site_journal(project_meta)
-        with sub[1]:
-            _subtab_equipment_hours(df, project_meta)
-        with sub[2]:
-            _tab_employees(df, project_meta)
-        with sub[3]:
-            _subtab_contractors_field(df, project_meta)
-
-    with tabs[3]:
-        # סולר וכלים: 6 sub-tabs
-        sub = st.tabs(["קניות סולר", "שימוש בסולר", "מלאי סולר",
-                        "צריכת סולר לפי כלי", "טיפולים ואחזקה", "עלות כלי לשעה"])
+        # סולר: 4 sub-tabs (עם הזנה ידנית בכל אחד)
+        sub = st.tabs(["קניות סולר", "שימוש בסולר", "סיכום מלאי", "ניתוח"])
         with sub[0]:
             _subtab_fuel_purchases(df, project_meta)
+            with st.expander("➕ הזנה ידנית של קניות סולר"):
+                from ui.pages.field_data_entry import (
+                    _render_fuel_quick_form, _render_sub_tab,
+                )
+                _render_fuel_quick_form(project_id)
+                _render_sub_tab("fuel_logs", project_id, None, None)
         with sub[1]:
             _subtab_fuel_usage(df, project_meta)
         with sub[2]:
             _subtab_fuel_inventory(df, project_meta)
         with sub[3]:
             _subtab_consumption_per_tool(df, project_meta)
-        with sub[4]:
-            _subtab_maintenance(df, project_meta)
-        with sub[5]:
-            _subtab_cost_per_hour(df, project_meta)
+
+    with tabs[3]:
+        # שעות עבודה: 3 sub-tabs (עם הזנה ידנית בכל אחד)
+        sub = st.tabs(["שעות עבודה כלים", "שעות עובדים", "שעות קבלני משנה"])
+        with sub[0]:
+            _subtab_equipment_hours(df, project_meta)
+            with st.expander("➕ הזנה ידנית של שעות עבודה כלים"):
+                from ui.pages.field_data_entry import _render_sub_tab
+                _render_sub_tab("equipment_work_logs", project_id, None, None)
+        with sub[1]:
+            _tab_employees(df, project_meta)
+            with st.expander("➕ הזנה ידנית של שעות עובדים"):
+                from ui.pages.field_data_entry import _render_sub_tab
+                _render_sub_tab("employee_work_logs", project_id, None, None)
+        with sub[2]:
+            _subtab_contractors_field(df, project_meta)
+            with st.expander("➕ הזנה ידנית של שעות קבלני משנה"):
+                from ui.pages.field_data_entry import _render_sub_tab
+                _render_sub_tab("contractor_work_logs", project_id, None, None)
 
     with tabs[4]:
-        # ספקים וקבלנים (היחיד שלא צריך sub-tabs עמוקים, יש פנים פילטרים)
-        _tab_suppliers(df, project_meta)
-
-    with tabs[5]:
-        # תקציב מול ביצוע - הטאב החדש
-        from ui.pages.budget import render_budget_tab
-        render_budget_tab(df, project_meta)
-
-    with tabs[6]:
-        # בדיקות וחריגות
-        _tab_qa(df, project_meta)
-
-    with tabs[7]:
-        # ייבוא ועדכון נתונים: 4 sub-tabs
-        sub = st.tabs(["ייבוא קבצים", "יומני שטח (הזנה ידנית)",
-                        "היסטוריית ייבוא", "גיבוי וייצוא"])
+        # כלים: 4 sub-tabs
+        sub = st.tabs(["רשימת כלים", "פעילות כלים", "עלויות כלי", "ניתוח כלי"])
         with sub[0]:
-            from ui.pages.import_data import render_import_page
-            from pipeline import list_available_projects
-            render_import_page(list_available_projects())
+            from ui.pages.field_data_entry import _render_tools_management
+            _render_tools_management()
         with sub[1]:
-            from ui.pages.field_data_entry import render_field_data_entry
-            render_field_data_entry(project_meta)
+            _tab_vehicles_tools(df, project_meta)
         with sub[2]:
-            _subtab_import_history(project_meta)
+            _subtab_maintenance(df, project_meta)
+            with st.expander("➕ הזנה ידנית של טיפולים ואחזקה"):
+                from ui.pages.field_data_entry import _render_sub_tab
+                _render_sub_tab("maintenance_logs", project_id, None, None)
         with sub[3]:
-            _subtab_backup_export(project_meta)
+            _subtab_cost_per_hour(df, project_meta)
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
@@ -254,14 +283,38 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
     render_kpi_group(kpis_fin, "פיננסי", "ti-cash-banknote")
     render_kpi_group(kpis_ops, "תפעולי", "ti-activity")
 
-    sec("מגמה חודשית")
+    # ── מגמה חודשית: הכנסות מול הוצאות ──
+    sec("מגמה חודשית", meta="הכנסות מול הוצאות")
     trend = analytics.monthly_trend(df)
     if trend.empty:
         st.caption("אין מספיק חודשים להצגת מגמה.")
     else:
         disp = trend.copy()
-        disp.columns = ["חודש", "הוצאות", "הכנסות", "יתרה"]
-        st.dataframe(disp.round(0), use_container_width=True, hide_index=True)
+        disp["רווח %"] = (
+            (disp["total_income"] - disp["total_expenses"]) / disp["total_income"] * 100
+        ).where(disp["total_income"] > 0).round(1)
+        disp = disp[["month", "total_income", "total_expenses", "balance", "רווח %"]]
+        disp.columns = ["חודש", "הכנסות", "הוצאות", "יתרה", "רווח %"]
+        for c in ("הכנסות", "הוצאות", "יתרה"):
+            disp[c] = disp[c].round(0)
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── Top 10 הוצאות + Top 10 ספקים ──
+    chash_exp = df[(df["source"] == "chashbashevet") & (df["amount"] > 0)] \
+        if "source" in df.columns else df.iloc[0:0]
+    if not chash_exp.empty:
+        c1, c2 = st.columns(2)
+        with c1:
+            sec("Top 10 הוצאות", meta="לפי קטגוריה")
+            top_cat = chash_exp.groupby("category")["amount"].sum().nlargest(10).round(0).reset_index()
+            top_cat.columns = ["קטגוריה", "סה\"כ (₪)"]
+            st.dataframe(top_cat, use_container_width=True, hide_index=True)
+        with c2:
+            sec("Top 10 ספקים", meta="לפי סכום")
+            top_sup = (chash_exp[chash_exp["supplier"].fillna("") != ""]
+                        .groupby("supplier")["amount"].sum().nlargest(10).round(0).reset_index())
+            top_sup.columns = ["ספק", "סה\"כ (₪)"]
+            st.dataframe(top_sup, use_container_width=True, hide_index=True)
 
 
 # ─── Tab 2: הכנסות (חשבוניות-לרמת-פירוט) ────────────────────
