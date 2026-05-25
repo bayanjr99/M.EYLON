@@ -80,7 +80,7 @@ def _render_sub_tab(table: str, project_id: str, month_filter: str | None,
     state_key = _editor_state_key(table, project_id)
     st.session_state[f"{state_key}_original"] = original_ids
 
-    st.caption(f"{len(rows)} שורות. הוסף שורות חדשות, ערוך קיימות, מחק עם 🗑 ב-toolbar.")
+    st.caption(f"{len(rows)} שורות. הוסף שורות חדשות, ערוך קיימות, מחק עם 🗑 בסרגל הכלים.")
 
     edited = st.data_editor(
         rows,
@@ -170,77 +170,13 @@ def _render_tools_management() -> None:
     """ניהול רשימת כלים: הוספה / מחיקה / עדכון. Fleet-wide."""
     ins("blue", "🔩", "ניהול רשימת כלים",
         "כלים שמוזנים כאן זמינים לכל הפרויקטים. הם ממוזגים עם "
-        "<code>data/tools_registry.xlsx</code> הקיים (SQLite גובר).")
-
-    # ── טופס הוספה ──
-    sec("הוסף כלי חדש")
-    with st.form("add_tool_form", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            new_lic_str = st.text_input("מספר רישוי *")
-        with c2:
-            new_name = st.text_input("שם / דגם *")
-        with c3:
-            new_internal = st.text_input("מספר פנימי", help="מספר שלך / מקובץ עליו תזכור")
-        c4, c5, c6, c7 = st.columns(4)
-        with c4:
-            new_group = st.selectbox("קבוצת כלי", control_db.EQUIPMENT_GROUPS,
-                                       help="צמ\"ה / רכב / משאית / חשמלי")
-        with c5:
-            new_fuel = st.selectbox("סוג דלק", control_db.FUEL_TYPES,
-                                      help="לזיהוי שיוך תדלוקים")
-        with c6:
-            new_owner_kind = st.selectbox("סוג בעלות", control_db.OWNERSHIPS)
-        with c7:
-            new_status = st.selectbox("סטטוס", control_db.EQUIPMENT_STATUSES)
-        c8, c9, c10 = st.columns(3)
-        with c8:
-            new_type = st.text_input("סוג כלי (תיאור חופשי)")
-        with c9:
-            new_owner = st.text_input("בעלים שם",
-                                       help="בעלים אילון / אבו גאנם / וכו'")
-        with c10:
-            new_notes = st.text_input("הערות")
-        c11, c12 = st.columns(2)
-        with c11:
-            new_nl = st.number_input("תקן תחתון (ל'/ש') - 0 אם לא ידוע",
-                                      min_value=0.0, step=0.5, value=0.0)
-        with c12:
-            new_nh = st.number_input("תקן עליון (ל'/ש') - 0 אם לא ידוע",
-                                      min_value=0.0, step=0.5, value=0.0)
-        submitted = st.form_submit_button("➕ הוסף כלי", type="primary",
-                                           use_container_width=True)
-        if submitted:
-            try:
-                lic_int = int((new_lic_str or "").strip())
-            except (TypeError, ValueError):
-                lic_int = 0
-            ok, msg = control_db.add_tool(
-                license_num=lic_int,
-                tool_name=new_name or "",
-                tool_type=new_type or "",
-                owner=new_owner or "",
-                norm_low=float(new_nl) if new_nl > 0 else None,
-                norm_high=float(new_nh) if new_nh > 0 else None,
-                notes=new_notes or "",
-                internal_num=new_internal or "",
-                equipment_group=new_group,
-                fuel_type=new_fuel,
-                ownership=new_owner_kind,
-                status=new_status,
-            )
-            if ok:
-                st.success(msg)
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error(msg)
+        "קובץ רשימת הכלים הקיים (הזנה ידנית גוברת).")
 
     # ── רשימה + מחיקה ──
-    sec("רשימת כלים (SQLite)", meta="לחץ Delete על שורה למחיקה")
+    sec("רשימת כלים", meta="לחץ Delete על שורה למחיקה")
     tools = control_db.list_tools()
     if tools.empty:
-        st.caption("אין כלים שהוזנו ידנית. הוסף כלי בטופס למעלה.")
+        st.caption("אין כלים שהוזנו ידנית. השתמש בטופס 'הוסף כלי חדש' למטה.")
     else:
         # סיכום קצר לפי קבוצה
         if "equipment_group" in tools.columns:
@@ -250,7 +186,7 @@ def _render_tools_management() -> None:
             with cA:
                 st.dataframe(grp_summary, use_container_width=True, hide_index=True)
             with cB:
-                st.caption(f"סה\"כ {len(tools)} כלים ב-SQLite. כלים נוספים מ-tools_registry.xlsx מוצגים למטה.")
+                st.caption(f"סה\"כ {len(tools)} כלים במערכת. כלים נוספים מקובץ רשימת הכלים מוצגים למטה.")
 
         show_cols = ["license_num", "internal_num", "tool_name", "tool_type",
                       "equipment_group", "fuel_type", "ownership", "status",
@@ -283,21 +219,85 @@ def _render_tools_management() -> None:
                     st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.error(f"כלי {del_lic_int} לא נמצא ב-SQLite (ייתכן שהוא ב-xlsx בלבד)")
+                    st.error(f"כלי {del_lic_int} לא נמצא במערכת (ייתכן שהוא בקובץ רשימת הכלים בלבד)")
 
-    # ── מוצג גם: tools מ-xlsx (לקריאה בלבד) ──
+    # ── מוצג גם: כלים מקובץ רשימת הכלים (לקריאה בלבד) ──
     from pipeline import _load_tools_registry, TOOLS_REGISTRY
     merged = _load_tools_registry()
     n_xlsx = (len(merged) - len(tools)) if not tools.empty else len(merged)
     if n_xlsx > 0:
-        with st.expander(f"📄 כלים מ-xlsx ({n_xlsx}) - לקריאה בלבד"):
-            st.caption(f"מקור: {TOOLS_REGISTRY.name}. כדי לערוך - הוסף את אותו license_num ב-SQLite.")
+        with st.expander(f"📄 כלים מקובץ רשימת הכלים ({n_xlsx}) - לקריאה בלבד"):
+            st.caption(f"מקור: {TOOLS_REGISTRY.name}. כדי לערוך - הוסף את אותו מספר רישוי במערכת.")
             xlsx_only = merged[~merged["license_num"].isin(
                 set(tools["license_num"].dropna().astype(int)) if not tools.empty else set()
             )]
             cols = [c for c in ["license_num", "tool_name", "tool_type", "norm_low", "norm_high"]
                     if c in xlsx_only.columns]
             st.dataframe(xlsx_only[cols], use_container_width=True, hide_index=True)
+
+    # ── טופס הוספה (מתחת לרשימה) ──
+    with st.expander("➕ הוסף כלי חדש", expanded=tools.empty):
+        with st.form("add_tool_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                new_lic_str = st.text_input("מספר רישוי *")
+            with c2:
+                new_name = st.text_input("שם / דגם *")
+            with c3:
+                new_internal = st.text_input("מספר פנימי", help="מספר שלך / מקובץ עליו תזכור")
+            c4, c5, c6, c7 = st.columns(4)
+            with c4:
+                new_group = st.selectbox("קבוצת כלי", control_db.EQUIPMENT_GROUPS,
+                                           help="צמ\"ה / רכב / משאית / חשמלי")
+            with c5:
+                new_fuel = st.selectbox("סוג דלק", control_db.FUEL_TYPES,
+                                          help="לזיהוי שיוך תדלוקים")
+            with c6:
+                new_owner_kind = st.selectbox("סוג בעלות", control_db.OWNERSHIPS)
+            with c7:
+                new_status = st.selectbox("סטטוס", control_db.EQUIPMENT_STATUSES)
+            c8, c9, c10 = st.columns(3)
+            with c8:
+                new_type = st.text_input("סוג כלי (תיאור חופשי)")
+            with c9:
+                new_owner = st.text_input("בעלים שם",
+                                           help="בעלים אילון / אבו גאנם / וכו'")
+            with c10:
+                new_notes = st.text_input("הערות")
+            c11, c12 = st.columns(2)
+            with c11:
+                new_nl = st.number_input("תקן תחתון (ל'/ש') - 0 אם לא ידוע",
+                                          min_value=0.0, step=0.5, value=0.0)
+            with c12:
+                new_nh = st.number_input("תקן עליון (ל'/ש') - 0 אם לא ידוע",
+                                          min_value=0.0, step=0.5, value=0.0)
+            submitted = st.form_submit_button("➕ הוסף כלי", type="primary",
+                                               use_container_width=True)
+            if submitted:
+                try:
+                    lic_int = int((new_lic_str or "").strip())
+                except (TypeError, ValueError):
+                    lic_int = 0
+                ok, msg = control_db.add_tool(
+                    license_num=lic_int,
+                    tool_name=new_name or "",
+                    tool_type=new_type or "",
+                    owner=new_owner or "",
+                    norm_low=float(new_nl) if new_nl > 0 else None,
+                    norm_high=float(new_nh) if new_nh > 0 else None,
+                    notes=new_notes or "",
+                    internal_num=new_internal or "",
+                    equipment_group=new_group,
+                    fuel_type=new_fuel,
+                    ownership=new_owner_kind,
+                    status=new_status,
+                )
+                if ok:
+                    st.success(msg)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 
 # ── Quick fuel entry form ────────────────────────────────────

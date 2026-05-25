@@ -10,26 +10,21 @@ import streamlit as st
 
 from core import project_aggregator
 from ui.components import empty_state, sec
+from ui.formatters import format_currency
 
 
 def _fmt_money(v: float) -> str:
-    """₪123K / ₪1.2M / ₪987 — קומפקטי לכרטיסים."""
-    if abs(v) >= 1_000_000:
-        return f"₪{v/1_000_000:.2f}M"
-    if abs(v) >= 1_000:
-        return f"₪{v/1_000:.0f}K"
-    return f"₪{v:,.0f}"
+    """פורמט מלא: ₪1,250,000."""
+    return format_currency(v, blank="₪0")
 
 
 def _status_pill_html(status: str) -> str:
-    """תרגום סטטוס לכרטיס pill עם צבע."""
-    cls_map = {"active": "ok", "פעיל": "ok", "paused": "warn",
-               "מושהה": "warn", "closed": "crit", "סגור": "crit",
-               "on_hold": "warn", "completed": "ok", "הושלם": "ok"}
-    label_map = {"active": "פעיל", "paused": "מושהה", "closed": "סגור",
-                 "on_hold": "מושהה", "completed": "הושלם"}
-    cls = cls_map.get(str(status).lower(), "warn")
-    label = label_map.get(str(status).lower(), str(status) or "—")
+    """תג סטטוס: ירוק=פעיל, אפור=הסתיים, כחול=עתידי, כתום=מושהה."""
+    from core.project_store import validate_project_status, STATUS_HE
+    s = validate_project_status(status)
+    cls = {"active": "ok", "completed": "neutral",
+           "future": "info", "paused": "warn"}.get(s, "warn")
+    label = STATUS_HE.get(s, s)
     return f'<span class="status-pill {cls}">{label}</span>'
 
 
@@ -47,7 +42,8 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
     import streamlit as st
     from datetime import date as date_cls
     from core.project_store import (
-        make_safe_project_id, validate_project_id, create_project, VALID_STATUSES,
+        make_safe_project_id, validate_project_id, create_project,
+        VALID_STATUSES, STATUS_HE,
     )
 
     existing_ids = {p.get("project_id", "") for p in existing_projects}
@@ -71,12 +67,17 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
         with c2:
             pid_default = suggested_id if suggested_id else ""
             pid = st.text_input(
-                "project_id (אנגלית, lower_case, ייחודי) *",
+                "מזהה פרויקט (אנגלית, אותיות קטנות, ייחודי) *",
                 value=pid_default,
             )
-            status = st.selectbox("סטטוס", VALID_STATUSES, index=0)
+            status_he = st.selectbox(
+                "סטטוס", [STATUS_HE[s] for s in VALID_STATUSES], index=0,
+            )
             start_date = st.date_input(
                 "תאריך התחלה", value=date_cls.today(), format="DD/MM/YYYY",
+            )
+            end_date = st.date_input(
+                "תאריך סיום (אופציונלי)", value=None, format="DD/MM/YYYY",
             )
         notes = st.text_area("הערות")
 
@@ -106,23 +107,125 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
             if not ok_v:
                 st.error(err_v)
                 return
+            # תרגום סטטוס מעברית לקוד
+            status_code = next((k for k, v in STATUS_HE.items() if v == status_he),
+                                "active")
             ok, msg, created_id = create_project({
                 "project_id": final_pid,
                 "project_name": name.strip(),
                 "site_name": (site or "").strip(),
                 "client_name": (client or "").strip(),
-                "status": status,
+                "status": status_code,
                 "start_date": start_date.strftime("%Y-%m-%d") if start_date else "",
+                "end_date": end_date.strftime("%Y-%m-%d") if end_date else "",
                 "notes": (notes or "").strip(),
             })
             if not ok:
                 st.error(msg)
                 return
-            st.success(f"✅ {msg}. ID: {created_id}")
+            st.success(f"✅ {msg}. מזהה: {created_id}")
             st.cache_data.clear()
             st.session_state.pop("show_new_project_form", None)
             # ניווט אוטומטי לפרויקט החדש
             st.session_state["selected_project_id"] = created_id
+            st.rerun()
+
+
+def _render_edit_project_form(project_id: str) -> None:
+    """טופס עריכת פרטי פרויקט קיים.
+
+    project_id קבוע (לא ניתן לעריכה כדי לא לשבור נתיבים).
+    """
+    import streamlit as st
+    from datetime import date as date_cls
+    from core.project_store import (
+        get_project_by_id, update_project, VALID_STATUSES, STATUS_HE,
+    )
+
+    proj = get_project_by_id(project_id)
+    if proj is None:
+        st.error(f"פרויקט '{project_id}' לא נמצא")
+        if st.button("← חזרה לרשימה", key="edit_back_notfound"):
+            st.session_state.pop("edit_project_id", None)
+            st.rerun()
+        return
+
+    def _date_or_none(v):
+        if not v:
+            return None
+        try:
+            return pd.to_datetime(v).date()
+        except Exception:
+            return None
+
+    current_status = proj.get("status") or "active"
+    current_status_he = STATUS_HE.get(current_status, "פעיל")
+    status_options = [STATUS_HE[s] for s in VALID_STATUSES]
+
+    with st.form("edit_project_form", clear_on_submit=False):
+        st.markdown(f"### ✏️ עריכת פרויקט — `{project_id}`")
+        st.caption("מזהה הפרויקט קבוע ולא ניתן לערוך כדי לא לשבור נתונים קיימים.")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            name = st.text_input("שם פרויקט *",
+                                  value=proj.get("project_name") or "")
+            site = st.text_input("שם אתר",
+                                  value=proj.get("site_name") or "")
+            client = st.text_input("שם לקוח",
+                                    value=proj.get("client_name") or "")
+        with c2:
+            status_he = st.selectbox(
+                "סטטוס", status_options,
+                index=status_options.index(current_status_he)
+                      if current_status_he in status_options else 0,
+            )
+            start_date = st.date_input(
+                "תאריך התחלה",
+                value=_date_or_none(proj.get("start_date")) or date_cls.today(),
+                format="DD/MM/YYYY",
+            )
+            end_date = st.date_input(
+                "תאריך סיום (אופציונלי)",
+                value=_date_or_none(proj.get("end_date")),
+                format="DD/MM/YYYY",
+            )
+
+        notes = st.text_area("הערות", value=proj.get("notes") or "")
+
+        col_save, col_cancel = st.columns([3, 1])
+        with col_save:
+            submitted = st.form_submit_button(
+                "💾 שמור שינויים", type="primary", use_container_width=True,
+            )
+        with col_cancel:
+            cancelled = st.form_submit_button("ביטול", use_container_width=True)
+
+        if cancelled:
+            st.session_state.pop("edit_project_id", None)
+            st.rerun()
+
+        if submitted:
+            if not name or not name.strip():
+                st.error("שם פרויקט חובה")
+                return
+            status_code = next((k for k, v in STATUS_HE.items() if v == status_he),
+                                "active")
+            ok, msg = update_project(project_id, {
+                "project_name": name.strip(),
+                "site_name": (site or "").strip(),
+                "client_name": (client or "").strip(),
+                "status": status_code,
+                "start_date": start_date.strftime("%Y-%m-%d") if start_date else "",
+                "end_date": end_date.strftime("%Y-%m-%d") if end_date else "",
+                "notes": (notes or "").strip(),
+            })
+            if not ok:
+                st.error(msg)
+                return
+            st.success("✅ הפרויקט עודכן בהצלחה")
+            st.cache_data.clear()
+            st.session_state.pop("edit_project_id", None)
             st.rerun()
 
 
@@ -175,10 +278,17 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
         projects: תוצאת pipeline.list_available_projects().
     """
     import streamlit as st
+    from core.project_store import validate_project_status, STATUS_HE, VALID_STATUSES
 
-    # ── אם הטופס פתוח - מציגים אותו במקום הרשת ──
+    # ── אם טופס יצירה פתוח - מציגים אותו במקום הרשת ──
     if st.session_state.get("show_new_project_form"):
         _render_new_project_form(projects)
+        return
+
+    # ── אם טופס עריכה פתוח - מציגים אותו במקום הרשת ──
+    edit_pid = st.session_state.get("edit_project_id")
+    if edit_pid:
+        _render_edit_project_form(edit_pid)
         return
 
     if not projects:
@@ -189,12 +299,34 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
             _render_add_project_card()
         return
 
-    sec("בחר פרויקט", meta=f"{len(projects)} פרויקטים ברגיסטרי")
+    # ── פילטר סטטוס ──
+    filter_options = ["הכל"] + [STATUS_HE[s] for s in VALID_STATUSES]
+    f_col, _ = st.columns([1, 3])
+    with f_col:
+        chosen = st.selectbox("פילטר לפי סטטוס", filter_options, index=0,
+                                key="proj_status_filter")
+
+    if chosen == "הכל":
+        filtered = projects
+    else:
+        target = next((k for k, v in STATUS_HE.items() if v == chosen), None)
+        filtered = [p for p in projects
+                    if validate_project_status(p.get("status")) == target]
+
+    sec("בחר פרויקט",
+        meta=f"מציג {len(filtered)} מתוך {len(projects)} פרויקטים")
+
+    if not filtered:
+        st.caption(f"אין פרויקטים בסטטוס '{chosen}'.")
+        # עדיין מציגים את כרטיס ההוספה
+        col_center, _ = st.columns([1, 1])
+        with col_center:
+            _render_add_project_card()
+        return
 
     # רשת כרטיסים: כרטיסי פרויקטים + כרטיס הוסף בסוף
     cols_per_row = 2
-    # בונים רשימה של "תאי תצוגה" - dict עם project או "add"
-    cells: list[dict | str] = list(projects) + ["__ADD__"]
+    cells: list[dict | str] = list(filtered) + ["__ADD__"]
     rows = [cells[i:i + cols_per_row] for i in range(0, len(cells), cols_per_row)]
 
     for row in rows:
@@ -207,11 +339,24 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
                     _render_project_card(cell, df_master)
 
 
+def _clean_text(v) -> str:
+    """מנקה NaN/None/ריק → ''. pandas NaN הוא float שמחזיר truthy ב-`or`."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
+
+
 def _render_project_card(proj: dict, df_master: pd.DataFrame) -> None:
     """כרטיס יחיד - שם/לקוח/סטטוס/KPIs/כפתור."""
     project_id = proj.get("project_id", "")
-    project_name = proj.get("project_name", project_id) or project_id
-    client = proj.get("client_name") or proj.get("notes") or "—"
+    project_name = _clean_text(proj.get("project_name")) or project_id
+    client = _clean_text(proj.get("client_name")) or _clean_text(proj.get("notes")) or "—"
     status = proj.get("status", "active")
 
     summary = project_aggregator.project_summary(df_master, project_id)
@@ -260,11 +405,9 @@ def _render_project_card(proj: dict, df_master: pd.DataFrame) -> None:
           <i class="ti ti-database-off" style="font-size:24px;color:#94A3B8;display:block;
             margin-bottom:6px"></i>
           <b>אין עדיין נתונים לפרויקט זה</b><br>
-          <span style="font-size:11px">הוסף קבצי חודש ל-
-          <code style="background:#fff;padding:1px 5px;border-radius:3px">data/projects/{}/&lt;MM-YYYY&gt;/</code>
-          </span>
+          <span style="font-size:11px">הוסף קבצי חודש בתיקיית הפרויקט</span>
         </div>
-        """.format(project_id)
+        """
 
     st.markdown(
         f"""
@@ -285,8 +428,12 @@ def _render_project_card(proj: dict, df_master: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
-    # כפתור Streamlit נפרד (לא ניתן לשים בתוך HTML)
+    # כפתורי Streamlit נפרדים (לא ניתן לשים בתוך HTML)
     if st.button("פתח פרויקט ←", key=f"open_{project_id}",
-                 use_container_width=True, type="primary"):
+                   use_container_width=True, type="primary"):
         st.session_state["selected_project_id"] = project_id
+        st.rerun()
+    if st.button("✏️ ערוך פרויקט", key=f"edit_{project_id}",
+                   use_container_width=True):
+        st.session_state["edit_project_id"] = project_id
         st.rerun()

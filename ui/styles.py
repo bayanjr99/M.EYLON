@@ -368,6 +368,8 @@ hr{border:none!important;border-top:1px dashed var(--line)!important;
   border:1px solid var(--status-warn-border);}
 .status-pill.crit{background:var(--status-bad-soft);color:var(--status-bad);
   border:1px solid var(--status-bad-border);}
+.status-pill.info{background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;}
+.status-pill.neutral{background:#F1F5F9;color:#475569;border:1px solid #CBD5E1;}
 
 /* ═══════════════════════════════════════════════════════════════════
    POLISH LAYER - מעובד מ-app_gpt_dashboard.py של billing_system.
