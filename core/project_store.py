@@ -427,3 +427,74 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
 def update_project_meta(project_id: str, updates: dict) -> tuple[bool, str]:
     """Alias ישן ל-update_project (תאימות לקוד קיים)."""
     return update_project(project_id, updates)
+
+
+# ── Delete project ──────────────────────────────────────────
+TRASH_DIR = DATA_ROOT / ".trash"
+
+
+def delete_project(project_id: str,
+                    delete_folder: bool = True) -> tuple[bool, str, str | None]:
+    """מוחק פרויקט: מסיר מהרגיסטרי + מעביר תיקייה לסל מיחזור.
+
+    **הפעולה הפיכה ידנית** — התיקייה לא נמחקת באמת אלא עוברת אל
+    ``data/.trash/<project_id>_<timestamp>/``. ניתן לשחזר על-ידי
+    החזרה ידנית של התיקייה אל ``data/projects/`` והוספה לרגיסטרי.
+
+    Args:
+        project_id: מזהה הפרויקט למחיקה.
+        delete_folder: אם True (ברירת מחדל), התיקייה תועבר לסל מיחזור.
+                       אם False, רק נמחק מהרגיסטרי (תיקייה נשארת).
+
+    Returns:
+        (success, message, trash_path_or_None)
+    """
+    import shutil
+
+    pid = (project_id or "").strip()
+    if not pid:
+        return False, "project_id חסר", None
+
+    registry = load_projects_registry()
+    if registry.empty or pid not in registry["project_id"].astype(str).values:
+        return False, f"פרויקט '{pid}' לא נמצא ברגיסטרי", None
+
+    # שלב 1: הסרה מהרגיסטרי
+    new_registry = registry[registry["project_id"].astype(str) != pid].copy()
+    try:
+        _save_projects_registry(new_registry)
+    except PermissionError:
+        return False, ("לא ניתן לכתוב ל-projects_registry.xlsx. "
+                       "סגור את הקובץ ב-Excel ונסה שוב."), None
+    except Exception as e:
+        logger.exception("Failed to write registry on delete: %s", e)
+        return False, f"שגיאה בכתיבת הרגיסטרי: {e}", None
+
+    # שלב 2: העברת התיקייה לסל מיחזור (אופציונלי)
+    trash_path: str | None = None
+    if delete_folder:
+        pdir = PROJECTS_DIR / pid
+        if pdir.exists():
+            try:
+                TRASH_DIR.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest = TRASH_DIR / f"{pid}_{ts}"
+                shutil.move(str(pdir), str(dest))
+                trash_path = str(dest)
+                logger.info("Moved project folder to trash: %s", dest)
+            except Exception as e:
+                # אם ההעברה נכשלה — נחזיר הרגיסטרי למצב קודם
+                logger.exception("Failed to move folder to trash: %s", e)
+                try:
+                    _save_projects_registry(registry)
+                except Exception:
+                    pass
+                return False, (f"שגיאה בהעברת התיקייה לסל מיחזור: {e}. "
+                               f"הרגיסטרי שוחזר."), None
+
+    logger.info("Deleted project %s (folder=%s, trash=%s)",
+                pid, delete_folder, trash_path)
+    msg = f"הפרויקט '{pid}' נמחק"
+    if trash_path:
+        msg += f". התיקייה הועברה ל-{trash_path}"
+    return True, msg, trash_path

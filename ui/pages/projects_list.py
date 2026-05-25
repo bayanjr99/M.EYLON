@@ -241,6 +241,78 @@ def _render_edit_project_form(project_id: str) -> None:
             st.session_state.pop("edit_project_id", None)
             st.rerun()
 
+    # ── אזור מסוכן: מחיקת פרויקט ──
+    _render_delete_project_section(project_id)
+
+
+def _render_delete_project_section(project_id: str) -> None:
+    """אזור מסוכן בתחתית טופס העריכה — מחיקת פרויקט עם 2 שלבי אישור.
+
+    שלב 1: לחיצה על "הצג אפשרויות מחיקה" → חושף את האזור.
+    שלב 2: הקלדת project_id מדויקת + לחיצה על "מחק לצמיתות".
+
+    המחיקה: התיקייה עוברת ל-data/.trash/<id>_<timestamp>/, ולא
+    נמחקת באמת — ניתן לשחזור ידני אם זו טעות.
+    """
+    import streamlit as st
+    from core.project_store import delete_project, PROJECTS_DIR
+
+    pdir = PROJECTS_DIR / project_id
+    folder_exists = pdir.exists()
+    n_months = 0
+    n_files = 0
+    if folder_exists:
+        try:
+            month_dirs = [d for d in pdir.iterdir() if d.is_dir() and "-" in d.name]
+            n_months = len(month_dirs)
+            n_files = sum(1 for _ in pdir.rglob("*") if _.is_file())
+        except Exception:
+            pass
+
+    st.markdown("---")
+    with st.expander("🗑 מחיקת פרויקט (אזור מסוכן)", expanded=False):
+        st.warning(
+            f"⚠️ פעולה זו תסיר את הפרויקט **`{project_id}`** מהמערכת. "
+            f"התיקייה ({n_months} חודשים · {n_files} קבצים) "
+            "תועבר לסל מיחזור (`data/.trash/`) ולא תימחק לצמיתות — "
+            "ניתן לשחזר ידנית במקרה של טעות."
+        )
+
+        confirm_key = f"del_proj_confirm_{project_id}"
+        typed = st.text_input(
+            f"כדי לאשר את המחיקה, הקלד מדויק את מזהה הפרויקט: "
+            f"`{project_id}`",
+            key=confirm_key,
+            placeholder=project_id,
+        )
+
+        can_delete = typed.strip() == project_id
+
+        delete_folder_too = st.checkbox(
+            "העבר גם את התיקייה לסל מיחזור (מומלץ)",
+            value=True,
+            key=f"del_proj_folder_{project_id}",
+            help="אם לא תסומן — הפרויקט יוסר רק מהרגיסטרי, התיקייה תישאר במקום.",
+        )
+
+        if st.button("🗑 מחק לצמיתות", type="secondary",
+                       disabled=not can_delete,
+                       key=f"del_proj_btn_{project_id}",
+                       use_container_width=True):
+            ok, msg, trash_path = delete_project(
+                project_id, delete_folder=delete_folder_too,
+            )
+            if not ok:
+                st.error(msg)
+                return
+            st.success(f"✅ {msg}")
+            if trash_path:
+                st.caption(f"שוחזר ב: `{trash_path}`")
+            st.cache_data.clear()
+            st.session_state.pop("edit_project_id", None)
+            st.session_state.pop("selected_project_id", None)
+            st.rerun()
+
 
 def _render_add_project_card() -> None:
     """כרטיס 'הוסף פרויקט' באותו גובה ועיצוב ככרטיסי הפרויקטים.
