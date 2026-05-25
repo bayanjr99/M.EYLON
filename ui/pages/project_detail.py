@@ -1648,8 +1648,62 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
 
 # ─── סולר וכלים → קניות סולר ───────────────────────────────
 def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
-    """קניות סולר מחשבשבת + הזנות ידניות (fuel_logs)."""
-    sec("קניות סולר", meta="מחשבשבת + הזנה ידנית")
+    """קניות סולר - 3 מקורות: דוח רכש פריטים (חשבונית-לחשבונית), חשבשבת, ידני."""
+    from pipeline import load_fuel_invoices_data
+    from core.fuel_invoices_loader import summary_by_supplier, summary_by_month
+
+    # ── מקור 1 (העיקרי): דוח רכש פריטים - חשבונית-לחשבונית ──
+    sec("חשבוניות סולר ברמת פירוט", meta="מ-fuel_invoices.xlsx (דוח רכש פריטים)")
+    inv = load_fuel_invoices_data(project_meta["project_id"])
+    if inv.empty:
+        ins("blue", "ℹ️", "אין דוח רכש פריטים",
+            "טען קובץ <code>data/fuel_invoices.xlsx</code> (פלט 'דוח רכש לפי פריט' מחשבשבת) "
+            "כדי לראות חשבוניות סולר עם ליטרים, מחיר לליטר, ספק וקוד אתר.")
+    else:
+        total_l = float(inv["liters"].sum())
+        total_c = float(inv["total_cost"].sum())
+        avg_p = total_c / total_l if total_l > 0 else 0
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("חשבוניות", str(len(inv)))
+        c2.metric("ליטרים", f"{total_l:,.0f}")
+        c3.metric("סה\"כ עלות", f"₪{total_c:,.0f}")
+        c4.metric("₪ ממוצע לליטר", f"{avg_p:.2f}")
+
+        # ─ סיכום לפי ספק ─
+        with st.expander("לפי ספק", expanded=True):
+            sup = summary_by_supplier(inv)
+            sup.columns = ["ספק", "חשבוניות", "ליטרים", "סה\"כ (₪)", "₪/ל'"]
+            st.dataframe(sup, use_container_width=True, hide_index=True)
+
+        # ─ סיכום חודשי + זיהוי קפיצות מחיר ─
+        with st.expander("לפי חודש (₪/ליטר) - לזיהוי קפיצות מחיר", expanded=True):
+            mo = summary_by_month(inv)
+            mo.columns = ["חודש", "חשבוניות", "ליטרים", "סה\"כ (₪)", "₪/ל'"]
+            st.dataframe(mo, use_container_width=True, hide_index=True)
+            # התראה אם יש קפיצה משמעותית
+            if len(mo) >= 2:
+                prices = mo["₪/ל'"].astype(float)
+                if (prices.max() / prices.min()) > 1.2:
+                    ins("amber", "⚠️", "קפיצה משמעותית במחיר",
+                        f"מחיר נע בין ₪{prices.min():.2f} ל-₪{prices.max():.2f} "
+                        f"({(prices.max()/prices.min()-1)*100:.0f}% הפרש). "
+                        "בדוק חשבוניות גבוהות מול הספק.")
+
+        # ─ פירוט חשבוניות ─
+        with st.expander(f"פירוט {len(inv)} חשבוניות"):
+            disp = inv[["date", "invoice_num", "supplier", "liters",
+                          "price_per_liter", "total_cost", "item_description", "month"]].copy()
+            disp["date"] = pd.to_datetime(disp["date"]).dt.strftime("%d/%m/%Y")
+            disp["liters"] = disp["liters"].round(0)
+            disp["price_per_liter"] = disp["price_per_liter"].round(2)
+            disp["total_cost"] = disp["total_cost"].round(0)
+            disp.columns = ["תאריך", "מס' חשבונית", "ספק", "ליטרים",
+                            "₪/ל'", "סה\"כ (₪)", "פרטים", "חודש"]
+            st.dataframe(disp.sort_values("תאריך", ascending=False),
+                         use_container_width=True, hide_index=True)
+
+    # ── מקור 2: חשבשבת כרטיס (חשבונות סולר) ──
+    sec("חיובי סולר מכרטיס ההנהלה", meta="cross-check עם דוח הרכש")
     fuel_chash = _filter_by_keywords(df, KEYWORD_CATEGORIES["fuel"])
     if "source" in fuel_chash.columns:
         fuel_chash = fuel_chash[fuel_chash["source"] == "chashbashevet"]

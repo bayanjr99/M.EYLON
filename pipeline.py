@@ -20,6 +20,7 @@ from core import (
     categorizer,
     chashbashevet_loader,
     fuel_inventory,
+    fuel_invoices_loader,
     hours_loader,
     site_tracking_loader,
     solar_loader,
@@ -87,6 +88,48 @@ def list_available_months(project_id: str) -> list[str]:
 
 
 SITE_TRACKING_PARQUET = DATA_ROOT / "site_tracking.parquet"
+FUEL_INVOICES_XLSX = DATA_ROOT / "fuel_invoices.xlsx"
+FUEL_INVOICES_PARQUET = DATA_ROOT / "fuel_invoices.parquet"
+
+
+def build_fuel_invoices_parquet() -> None:
+    """טוען את fuel_invoices.xlsx ושומר ל-parquet (לענן)."""
+    if not FUEL_INVOICES_XLSX.exists():
+        logger.info("fuel_invoices.xlsx not present — skipping parquet build")
+        return
+    df = fuel_invoices_loader.load_fuel_invoices(FUEL_INVOICES_XLSX)
+    if df.empty:
+        return
+    df = df.copy()
+    # Normalize types for parquet
+    if "site_code" in df.columns:
+        df["site_code"] = df["site_code"].astype("Int64")
+    for col in df.columns:
+        if df[col].dtype == "object":
+            df[col] = df[col].astype(str).replace("nan", "").replace("NaT", "")
+    df.to_parquet(FUEL_INVOICES_PARQUET, index=False)
+    logger.info("Saved fuel_invoices parquet (%d rows) to %s",
+                len(df), FUEL_INVOICES_PARQUET)
+
+
+def load_fuel_invoices_data(project_id: str | None = None) -> pd.DataFrame:
+    """קורא fuel_invoices.parquet; fallback ל-xlsx."""
+    if FUEL_INVOICES_PARQUET.exists():
+        try:
+            df = pd.read_parquet(FUEL_INVOICES_PARQUET)
+            # date back to datetime
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            if project_id:
+                df = df[df["project_id"] == project_id]
+            return df.reset_index(drop=True)
+        except Exception as e:
+            logger.warning("Failed to load fuel_invoices parquet: %s", e)
+    # Fallback
+    df = fuel_invoices_loader.load_fuel_invoices(FUEL_INVOICES_XLSX)
+    if project_id:
+        df = fuel_invoices_loader.filter_by_project(df, project_id)
+    return df
 
 
 def load_project_balances(project_id: str) -> pd.DataFrame:
@@ -531,6 +574,12 @@ def build_master() -> pd.DataFrame:
         build_site_tracking_parquet()
     except Exception as e:
         logger.exception("site_tracking parquet build failed (non-fatal): %s", e)
+
+    # Build fuel_invoices parquet
+    try:
+        build_fuel_invoices_parquet()
+    except Exception as e:
+        logger.exception("fuel_invoices parquet build failed (non-fatal): %s", e)
 
     # Sync projects + suppliers mirrors (non-fatal)
     try:
