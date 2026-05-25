@@ -181,17 +181,34 @@ def _render_tools_management() -> None:
         with c2:
             new_name = st.text_input("שם / דגם *", help="לדוגמה: שופל קטרפילר 966M")
         with c3:
-            new_type = st.text_input("סוג כלי", help="לדוגמה: שופל גדול")
-        c4, c5, c6 = st.columns(3)
+            new_internal = st.text_input("מספר פנימי", help="מספר שלך / מקובץ עליו תזכור")
+        c4, c5, c6, c7 = st.columns(4)
         with c4:
-            new_owner = st.text_input("בעלים", help="בעלים אילון / אבו גאנם / וכו'")
+            new_group = st.selectbox("קבוצת כלי", control_db.EQUIPMENT_GROUPS,
+                                       help="צמ\"ה / רכב / משאית / חשמלי")
         with c5:
+            new_fuel = st.selectbox("סוג דלק", control_db.FUEL_TYPES,
+                                      help="לזיהוי שיוך תדלוקים")
+        with c6:
+            new_owner_kind = st.selectbox("סוג בעלות", control_db.OWNERSHIPS)
+        with c7:
+            new_status = st.selectbox("סטטוס", control_db.EQUIPMENT_STATUSES)
+        c8, c9, c10 = st.columns(3)
+        with c8:
+            new_type = st.text_input("סוג כלי (תיאור חופשי)",
+                                       help="לדוגמה: שופל גדול / באגר זחל / בובקט")
+        with c9:
+            new_owner = st.text_input("בעלים שם",
+                                       help="בעלים אילון / אבו גאנם / וכו'")
+        with c10:
+            new_notes = st.text_input("הערות")
+        c11, c12 = st.columns(2)
+        with c11:
             new_nl = st.number_input("תקן תחתון (ל'/ש') - 0 אם לא ידוע",
                                       min_value=0.0, step=0.5, value=0.0)
-        with c6:
+        with c12:
             new_nh = st.number_input("תקן עליון (ל'/ש') - 0 אם לא ידוע",
                                       min_value=0.0, step=0.5, value=0.0)
-        new_notes = st.text_input("הערות")
         submitted = st.form_submit_button("➕ הוסף כלי", type="primary",
                                            use_container_width=True)
         if submitted:
@@ -207,6 +224,11 @@ def _render_tools_management() -> None:
                 norm_low=float(new_nl) if new_nl > 0 else None,
                 norm_high=float(new_nh) if new_nh > 0 else None,
                 notes=new_notes or "",
+                internal_num=new_internal or "",
+                equipment_group=new_group,
+                fuel_type=new_fuel,
+                ownership=new_owner_kind,
+                status=new_status,
             )
             if ok:
                 st.success(msg)
@@ -221,12 +243,26 @@ def _render_tools_management() -> None:
     if tools.empty:
         st.caption("אין כלים שהוזנו ידנית. הוסף כלי בטופס למעלה.")
     else:
-        show_cols = ["license_num", "tool_name", "tool_type", "owner",
-                      "norm_low", "norm_high", "notes"]
+        # סיכום קצר לפי קבוצה
+        if "equipment_group" in tools.columns:
+            grp_summary = tools.groupby("equipment_group").size().reset_index(name="כמות")
+            grp_summary.columns = ["קבוצת כלי", "כמות"]
+            cA, cB = st.columns([2, 3])
+            with cA:
+                st.dataframe(grp_summary, use_container_width=True, hide_index=True)
+            with cB:
+                st.caption(f"סה\"כ {len(tools)} כלים ב-SQLite. כלים נוספים מ-tools_registry.xlsx מוצגים למטה.")
+
+        show_cols = ["license_num", "internal_num", "tool_name", "tool_type",
+                      "equipment_group", "fuel_type", "ownership", "status",
+                      "owner", "norm_low", "norm_high", "notes"]
         show_cols = [c for c in show_cols if c in tools.columns]
         disp = tools[show_cols].copy()
-        heb = {"license_num": "מס' רישוי", "tool_name": "שם / דגם", "tool_type": "סוג",
-               "owner": "בעלים", "norm_low": "תקן ת'", "norm_high": "תקן ע'",
+        heb = {"license_num": "מס' רישוי", "internal_num": "מס' פנימי",
+               "tool_name": "שם / דגם", "tool_type": "סוג",
+               "equipment_group": "קבוצה", "fuel_type": "סוג דלק",
+               "ownership": "בעלות", "status": "סטטוס",
+               "owner": "בעלים שם", "norm_low": "תקן ת'", "norm_high": "תקן ע'",
                "notes": "הערות"}
         disp.columns = [heb.get(c, c) for c in show_cols]
         st.dataframe(disp, use_container_width=True, hide_index=True)

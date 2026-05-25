@@ -200,21 +200,35 @@ CREATE INDEX IF NOT EXISTS idx_sup_category ON suppliers(primary_category);
 
 -- Fleet-wide tools registry (NOT per-project — same fleet works across sites).
 -- Mirrors data/tools_registry.xlsx but mutable from the UI.
+-- Acts as the "equipment" central table — all fuel/hours/maintenance
+-- records cross-reference via license_num.
 CREATE TABLE IF NOT EXISTS tools_registry (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    license_num   INTEGER UNIQUE NOT NULL,
-    tool_name     TEXT NOT NULL,
-    tool_type     TEXT,
-    owner         TEXT,
-    norm_low      REAL,
-    norm_high     REAL,
-    notes         TEXT,
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL,
-    source        TEXT DEFAULT 'manual_entry'
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    license_num     INTEGER UNIQUE NOT NULL,
+    internal_num    TEXT,                -- מספר פנימי (לא רישוי)
+    tool_name       TEXT NOT NULL,
+    tool_type       TEXT,
+    equipment_group TEXT DEFAULT 'אחר',  -- צמ"ה / רכב / משאית / חשמלי / אחר
+    fuel_type       TEXT,                -- סולר / בנזין / חשמל / לא רלוונטי
+    ownership       TEXT DEFAULT 'בעלים',-- בעלים / שכירות / קבלן משנה
+    status          TEXT DEFAULT 'פעיל', -- פעיל / לא פעיל / בטיפול
+    owner           TEXT,
+    norm_low        REAL,
+    norm_high       REAL,
+    notes           TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    source          TEXT DEFAULT 'manual_entry'
 );
 CREATE INDEX IF NOT EXISTS idx_tools_license ON tools_registry(license_num);
+-- equipment_group index created in _migrate_tools_registry after column exists
 """
+
+# Valid values for the new fields (used by UI dropdowns + validation)
+EQUIPMENT_GROUPS = ["צמ\"ה", "רכב", "משאית", "חשמלי", "אחר"]
+FUEL_TYPES = ["סולר", "בנזין", "חשמל", "לא רלוונטי"]
+OWNERSHIPS = ["בעלים", "שכירות", "קבלן משנה"]
+EQUIPMENT_STATUSES = ["פעיל", "לא פעיל", "בטיפול"]
 
 # מטא-נתונים לטבלאות (סדר עמודות לתצוגה + עמודות עברית)
 TABLES: dict[str, dict] = {
@@ -301,10 +315,38 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_tools_registry(conn: sqlite3.Connection) -> None:
+    """מוסיף עמודות חדשות ל-tools_registry אם הן חסרות (תאימות לאחור).
+
+    SQLite לא תומך ב-ADD COLUMN IF NOT EXISTS, לכן בודקים PRAGMA קודם.
+    """
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(tools_registry)").fetchall()}
+    to_add = {
+        "internal_num": "TEXT",
+        "equipment_group": "TEXT DEFAULT 'אחר'",
+        "fuel_type": "TEXT",
+        "ownership": "TEXT DEFAULT 'בעלים'",
+        "status": "TEXT DEFAULT 'פעיל'",
+    }
+    for col, type_def in to_add.items():
+        if col not in existing:
+            try:
+                conn.execute(f"ALTER TABLE tools_registry ADD COLUMN {col} {type_def}")
+                logger.info("Migrated tools_registry: added column %s", col)
+            except sqlite3.OperationalError as e:
+                logger.warning("Migration failed for %s: %s", col, e)
+    # Create equipment_group index now that the column exists
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tools_group ON tools_registry(equipment_group)")
+    except sqlite3.OperationalError:
+        pass
+
+
 def init() -> None:
-    """יוצר את הסכמה (idempotent)."""
+    """יוצר את הסכמה (idempotent) + migrations."""
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate_tools_registry(conn)
     logger.info("control_db initialized at %s", DB_PATH)
 
 
@@ -475,7 +517,10 @@ def list_tools() -> pd.DataFrame:
 
 def add_tool(license_num: int, tool_name: str, tool_type: str = "",
              owner: str = "", norm_low: float | None = None,
-             norm_high: float | None = None, notes: str = "") -> tuple[bool, str]:
+             norm_high: float | None = None, notes: str = "",
+             internal_num: str = "", equipment_group: str = "אחר",
+             fuel_type: str = "", ownership: str = "בעלים",
+             status: str = "פעיל") -> tuple[bool, str]:
     """מוסיף כלי חדש. מחזיר (success, message)."""
     if not license_num:
         return False, "מספר רישוי חובה"
@@ -487,10 +532,16 @@ def add_tool(license_num: int, tool_name: str, tool_type: str = "",
         with _connect() as conn:
             conn.execute(
                 """INSERT INTO tools_registry
-                   (license_num, tool_name, tool_type, owner, norm_low, norm_high,
+                   (license_num, internal_num, tool_name, tool_type, equipment_group,
+                    fuel_type, ownership, status, owner, norm_low, norm_high,
                     notes, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (int(license_num), tool_name.strip(), tool_type.strip() or None,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (int(license_num), internal_num.strip() or None,
+                 tool_name.strip(), tool_type.strip() or None,
+                 equipment_group or "אחר",
+                 fuel_type.strip() or None,
+                 ownership or "בעלים",
+                 status or "פעיל",
                  owner.strip() or None, norm_low, norm_high,
                  notes.strip() or None, now, now),
             )
@@ -510,8 +561,9 @@ def delete_tool_by_license(license_num: int) -> bool:
 
 
 def update_tool(license_num: int, **fields) -> bool:
-    """עדכון שדות בכלי. השדות המותרים: tool_name, tool_type, owner, norm_low, norm_high, notes."""
-    allowed = {"tool_name", "tool_type", "owner", "norm_low", "norm_high", "notes"}
+    """עדכון שדות בכלי. כולל את כל השדות החדשים."""
+    allowed = {"tool_name", "tool_type", "owner", "norm_low", "norm_high", "notes",
+               "internal_num", "equipment_group", "fuel_type", "ownership", "status"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return False

@@ -105,15 +105,42 @@ def categorize(account_num: int, account_name: str = "") -> tuple[str, str]:
     return _classify_by_range(acct)
 
 
-# ── Fuel sub-classification by description ────────────────────
-# חשבון 74327 = סולר צמ"ה (תמיד)
-# חשבון 74317 = רכבים (סולר/בנזין/חשמל) - תלוי בתיאור
-FUEL_ZMH_ACCOUNT = 74327
-FUEL_MIXED_ACCOUNT = 74317
+# ── Fuel sub-classification (data-driven via fuel_rules.xlsx) ─
+FUEL_RULES_PATH = Path(__file__).resolve().parent.parent / "data" / "fuel_rules.xlsx"
 
-_FUEL_ELECTRIC_KW = ["טעינת רכב חשמלי", "רכב חשמלי", "אפקון", "תחבורה חשמלית"]
-_FUEL_BENZIN_KW = ["בנזין"]
-_FUEL_SOLAR_KW = ["סולר"]
+
+@lru_cache(maxsize=1)
+def load_fuel_rules(path: str = str(FUEL_RULES_PATH)) -> pd.DataFrame:
+    """טוען את fuel_rules.xlsx (idempotent + cached).
+
+    סכמה: priority / account_num / description_keyword /
+           main_category / sub_category / equipment_group /
+           fuel_type / confidence / note.
+    """
+    p = Path(path)
+    cols = ["priority", "account_num", "description_keyword",
+            "main_category", "sub_category", "equipment_group",
+            "fuel_type", "confidence", "note"]
+    if not p.exists():
+        logger.info("fuel_rules.xlsx not found, using fallback hardcoded rules")
+        return pd.DataFrame(columns=cols)
+    try:
+        df = pd.read_excel(p, engine="openpyxl")
+    except Exception as e:
+        logger.exception("Failed to load fuel_rules: %s", e)
+        return pd.DataFrame(columns=cols)
+    df["account_num"] = pd.to_numeric(df["account_num"], errors="coerce").astype("Int64")
+    df["priority"] = pd.to_numeric(df["priority"], errors="coerce").fillna(50).astype(int)
+    df["description_keyword"] = df["description_keyword"].fillna("").astype(str).str.strip()
+    for c in ("main_category", "sub_category", "equipment_group",
+                "fuel_type", "confidence", "note"):
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str).str.strip()
+    return df.sort_values("priority").reset_index(drop=True)
+
+
+# Hardcoded fallback - לתאימות לאחור אם fuel_rules.xlsx חסר
+_HARDCODED_FUEL_ACCOUNTS = {74327, 74317, 74331}
 
 
 def _classify_fuel_subcategory(account_num: int | None,
@@ -121,31 +148,46 @@ def _classify_fuel_subcategory(account_num: int | None,
     """Returns (main_category, sub_category, confidence, note) for fuel
     accounts; None if not a fuel account.
 
-    כללי הספק:
-      74327 → סולר צמ"ה (תמיד, high confidence)
-      74317 → לפי תיאור:
-        טעינת רכב חשמלי / אפקון → טעינת חשמל רכבים
-        בנזין                  → בנזין רכבים
-        סולר                   → סולר רכבים
-        אחר ("דלק" סתם)        → דלק לא מסווג (low confidence)
+    1. מנסה fuel_rules.xlsx (data-driven, ניתן להרחיב בלי קוד)
+    2. fallback להגדרות hardcoded לחשבונות 74327 / 74317 / 74331
     """
-    if account_num == FUEL_ZMH_ACCOUNT:
-        return ("דלק ואנרגיה", "סולר צמ\"ה", "high", "חשבון 74327 = סולר צמ\"ה")
-    if account_num != FUEL_MIXED_ACCOUNT:
+    if account_num is None:
         return None
-    desc = (description or "").strip()
-    if any(kw in desc for kw in _FUEL_ELECTRIC_KW):
-        return ("דלק ואנרגיה", "טעינת חשמל רכבים", "high",
-                "תיאור מציין רכב חשמלי / אפקון")
-    if any(kw in desc for kw in _FUEL_BENZIN_KW):
-        return ("דלק ואנרגיה", "בנזין רכבים", "high", "תיאור מציין בנזין")
-    if any(kw in desc for kw in _FUEL_SOLAR_KW):
-        return ("דלק ואנרגיה", "סולר רכבים", "high", "תיאור מציין סולר")
-    if "דלק" in desc:
-        return ("דלק ואנרגיה", "דלק לא מסווג", "low",
-                "תיאור מציין 'דלק' בלי פירוט סולר/בנזין/חשמל")
-    return ("דלק ואנרגיה", "דלק לא מסווג", "low",
-            "לא ניתן לזהות סוג דלק מהתיאור")
+
+    rules = load_fuel_rules()
+    if not rules.empty:
+        acct_rules = rules[rules["account_num"] == account_num]
+        if not acct_rules.empty:
+            desc = (description or "").strip()
+            for _, r in acct_rules.iterrows():
+                kw = r["description_keyword"]
+                # ריק = catch-all (תמיד מתאים)
+                if not kw or kw.lower() in desc.lower():
+                    main = r.get("main_category") or "אחר"
+                    sub = r.get("sub_category") or ""
+                    conf = r.get("confidence") or "high"
+                    note = r.get("note") or "מתוך fuel_rules.xlsx"
+                    return (main, sub, conf, note)
+            # יש כללים לחשבון אבל אף אחד לא תפס - לא מסווג
+            return ("דלק ואנרגיה", "דלק לא מסווג", "low",
+                    "חשבון דלק אך אף כלל לא תפס")
+
+    # Fallback hardcoded (אם fuel_rules.xlsx חסר/ריק)
+    if account_num not in _HARDCODED_FUEL_ACCOUNTS:
+        return None
+    if account_num == 74327:
+        return ("דלק ואנרגיה", "סולר צמ\"ה", "high", "fallback: חשבון 74327")
+    if account_num == 74331:
+        return ("אחזקת כלים", "שמנים/אוריאה", "high", "fallback: חשבון 74331")
+    # 74317
+    desc = (description or "").lower()
+    if any(kw in desc for kw in ["טעינת רכב חשמלי", "רכב חשמלי", "אפקון", "תחבורה חשמלית"]):
+        return ("דלק ואנרגיה", "טעינת חשמל רכבים", "high", "fallback: חשמלי")
+    if "בנזין" in desc:
+        return ("דלק ואנרגיה", "בנזין רכבים", "high", "fallback: בנזין")
+    if "סולר" in desc:
+        return ("דלק ואנרגיה", "סולר רכבים", "high", "fallback: סולר")
+    return ("דלק ואנרגיה", "דלק לא מסווג", "low", "fallback: לא זוהה")
 
 
 # ── Account type detection ────────────────────────────────────
