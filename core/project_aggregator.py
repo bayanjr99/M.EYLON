@@ -225,8 +225,23 @@ def project_summary(df: pd.DataFrame, project_id: str) -> dict:
     summary["num_transactions"] = int(len(data))
 
     if "amount" in data.columns:
-        summary["revenue"] = float(-data.loc[data["amount"] < 0, "amount"].sum())
-        summary["expenses"] = float(data.loc[data["amount"] > 0, "amount"].sum())
+        # סינון קשיח: revenue = רק מחשבונות הכנסה (927/951/7367 או category=='הכנסות')
+        # זה מונע ספירה בטעות של תיקוני זכות בחשבונות הוצאה כ"הכנסה".
+        from core.chashbashevet_loader import INCOME_ACCOUNTS
+        chash = data[data["source"] == "chashbashevet"] if "source" in data.columns else data
+        income_mask = (
+            chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
+        )
+        if "category" in chash.columns:
+            income_mask = income_mask | (chash["category"] == "הכנסות")
+        income_rows = chash[income_mask]
+        expense_rows = chash[~income_mask]
+
+        # הכנסה: amount שלילי אחרי inversion ב-loader. revenue = abs(sum)
+        summary["revenue"] = float(-income_rows["amount"].sum()) if not income_rows.empty else 0.0
+        # הוצאות: amount > 0 מחשבונות שאינם הכנסה
+        summary["expenses"] = float(expense_rows.loc[expense_rows["amount"] > 0, "amount"].sum()) \
+            if not expense_rows.empty else 0.0
         summary["profit"] = summary["revenue"] - summary["expenses"]
         if summary["revenue"] > 0:
             summary["profit_pct"] = (summary["profit"] / summary["revenue"]) * 100

@@ -56,7 +56,11 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     project_id = project_meta["project_id"]
     project_name = project_meta.get("project_name", project_id)
     client = project_meta.get("client_name") or project_meta.get("notes") or "—"
-    status = project_meta.get("status", "active")
+    # תרגום סטטוס לעברית להצגה
+    _STATUS_HE = {"active": "פעיל", "paused": "מושהה", "closed": "סגור",
+                  "on_hold": "מושהה", "completed": "הושלם"}
+    status_raw = project_meta.get("status", "active")
+    status = _STATUS_HE.get(str(status_raw).lower(), str(status_raw))
 
     # ── Back button + Header ─────────────────────────────────
     back_col, header_col = st.columns([1, 6])
@@ -336,18 +340,29 @@ def _extract_invoice_num(description: str) -> str:
 
 
 def _tab_income(df: pd.DataFrame) -> None:
-    # הכנסות = amount שלילי (חשבונות 927/951/7367 נורמלו לסלילי) או מילות מפתח
-    income = df[df["amount"] < 0] if "amount" in df.columns else df.iloc[0:0]
-    income_kw = _filter_by_keywords(df, KEYWORD_CATEGORIES["income"])
-    income_all = (pd.concat([income, income_kw]).drop_duplicates()
-                  if not income_kw.empty else income)
+    """הכנסות = רק שורות מחשבונות הכנסה (927/951/7367 או category=='הכנסות').
+
+    מסנן רק מסעיפי הכנסות אמיתיים - לא חשבונות אחרים שיש בתיאור שלהם
+    את המילה 'הכנסות' (כדי לא להכניס בטעות תנועות הוצאה).
+    """
+    from core.chashbashevet_loader import INCOME_ACCOUNTS
+    if "source" in df.columns:
+        chash = df[df["source"] == "chashbashevet"]
+    else:
+        chash = df
+
+    # סינון קשיח: רק חשבונות הכנסה (לפי מספר חשבון או category)
+    mask_acct = chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
+    mask_cat = (chash["category"] == "הכנסות") if "category" in chash.columns else False
+    income_all = chash[mask_acct | mask_cat]
 
     if income_all.empty:
         ins("blue", "ℹ️", "אין הכנסות מתועדות",
-            "הכנסות מזוהות לפי חשבונות {927, 951, 7367} או מילות מפתח כמו "
-            "'הכנסות', 'חיוב ספק'. ודא שהמאזן/כרטיס ההנהלה כולל אותם.")
+            "הכנסות מזוהות אך ורק לפי חשבונות {927, 951, 7367} או category='הכנסות'. "
+            "ודא שהמאזן/כרטיס ההנהלה כולל אותם.")
         return
 
+    # סה"כ הכנסות: amount שלילי = הכנסה (אחרי inversion ב-loader)
     total = float(income_all.loc[income_all["amount"] < 0, "amount"].sum() * -1
                   + income_all.loc[income_all["amount"] > 0, "amount"].sum())
     num_inv = int(len(income_all))
@@ -1124,20 +1139,36 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         cC.metric("השפעה כספית פתוחה",
                   f"₪{persisted.loc[persisted['status']=='open','estimated_impact_nis'].sum():,.0f}")
 
+        # תרגומים לעברית
+        SEV_HE = {"high": "גבוה", "medium": "בינוני", "low": "נמוך"}
+        STATUS_HE = {"open": "פתוח", "resolved": "טופל", "dismissed": "נדחה"}
+        CHECK_HE = {
+            "unmapped_account": "חשבון לא ממופה",
+            "solar_excess": "חריגת סולר",
+            "solar_without_hours": "סולר ללא שעות",
+            "hours_excessive": "שעות מופרזות",
+            "hours_negative": "שעות שליליות",
+            "large_transaction": "תנועה גדולה",
+            "suspicious_description": "תיאור חשוד",
+            "unassigned_transaction": "תנועה לא משויכת",
+        }
+
         # Show as expandable list with action buttons
         for _, row in persisted.head(20).iterrows():
             issue_id = int(row["id"])
             is_open = row["status"] == "open"
             icon = "🔴" if is_open else "✅"
-            sev = row.get("severity") or "?"
+            sev = SEV_HE.get(row.get("severity") or "", row.get("severity") or "—")
+            check_he = CHECK_HE.get(row.get("check_type", ""), row.get("check_type", ""))
+            status_he = STATUS_HE.get(row["status"], row["status"])
             impact = row.get("estimated_impact_nis") or 0
-            label = f"{icon} {row['check_type']} · {row['entity']} · ₪{impact:,.0f} ({sev})"
+            label = f"{icon} {check_he} · {row['entity']} · ₪{impact:,.0f} ({sev})"
 
             with st.expander(label):
                 st.write(f"**פרטים**: {row.get('details', '—')}")
                 st.caption(f"חודש: {row.get('month', '—')} · "
                            f"נוצר: {row.get('created_at', '—')} · "
-                           f"סטטוס: {row['status']}")
+                           f"סטטוס: {status_he}")
                 if row.get("notes"):
                     st.caption(f"הערות: {row['notes']}")
 

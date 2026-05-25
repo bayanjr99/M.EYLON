@@ -49,15 +49,34 @@ def kpi_active_projects(df: pd.DataFrame) -> int:
 
 
 def monthly_trend(df: pd.DataFrame, project_id: str | None = None) -> pd.DataFrame:
-    """מגמה חודשית: month, total_expenses, total_income, balance."""
+    """מגמה חודשית: month, total_expenses, total_income, balance.
+
+    הכנסות = רק מחשבונות הכנסה (927/951/7367 או category='הכנסות').
+    הוצאות = amount>0 מחשבונות שאינם הכנסה.
+    """
     cols = ["month", "total_expenses", "total_income", "balance"]
     data = _scope(df, project_id)
     if data.empty or "month" not in data.columns:
         return pd.DataFrame(columns=cols)
 
-    grouped = data.groupby("month", dropna=False).agg(
-        total_expenses=("amount", lambda s: float(s[s > 0].sum())),
-        total_income=("amount", lambda s: float(-s[s < 0].sum())),
+    from core.chashbashevet_loader import INCOME_ACCOUNTS
+    chash = data[data["source"] == "chashbashevet"] if "source" in data.columns else data
+    if chash.empty:
+        return pd.DataFrame(columns=cols)
+
+    income_mask = (
+        chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
+    )
+    if "category" in chash.columns:
+        income_mask = income_mask | (chash["category"] == "הכנסות")
+    chash = chash.assign(
+        _is_income=income_mask,
+        _income_amount=(-chash["amount"]).where(income_mask, 0),
+        _expense_amount=chash["amount"].where(~income_mask & (chash["amount"] > 0), 0),
+    )
+    grouped = chash.groupby("month", dropna=False).agg(
+        total_income=("_income_amount", "sum"),
+        total_expenses=("_expense_amount", "sum"),
     ).reset_index()
     grouped["balance"] = grouped["total_income"] - grouped["total_expenses"]
     return grouped.sort_values("month").reset_index(drop=True)[cols]

@@ -24,8 +24,10 @@ def _fmt_money(v: float) -> str:
 def _status_pill_html(status: str) -> str:
     """תרגום סטטוס לכרטיס pill עם צבע."""
     cls_map = {"active": "ok", "פעיל": "ok", "paused": "warn",
-               "מושהה": "warn", "closed": "crit", "סגור": "crit"}
-    label_map = {"active": "פעיל", "paused": "מושהה", "closed": "סגור"}
+               "מושהה": "warn", "closed": "crit", "סגור": "crit",
+               "on_hold": "warn", "completed": "ok", "הושלם": "ok"}
+    label_map = {"active": "פעיל", "paused": "מושהה", "closed": "סגור",
+                 "on_hold": "מושהה", "completed": "הושלם"}
     cls = cls_map.get(str(status).lower(), "warn")
     label = label_map.get(str(status).lower(), str(status) or "—")
     return f'<span class="status-pill {cls}">{label}</span>'
