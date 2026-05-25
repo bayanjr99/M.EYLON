@@ -127,26 +127,30 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
 
 
 def _render_add_project_card() -> None:
-    """כרטיס 'הוסף פרויקט' שמופיע ברשת ליד שאר הפרויקטים."""
+    """כרטיס 'הוסף פרויקט' באותו גודל וצורה ככרטיסי הפרויקטים."""
     import streamlit as st
+    # Card content (matches project card visual rhythm: ~200px content)
     st.markdown(
         """
-        <div class="section-card" style="padding:30px 22px;
-        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        <div class="section-card" style="padding:18px 22px;display:flex;
+        flex-direction:column;align-items:center;justify-content:center;
         text-align:center;border:2px dashed var(--brand-primary-mid);
-        background:var(--brand-primary-soft);min-height:280px">
-          <div style="font-size:48px;line-height:1;margin-bottom:10px;
-            color:var(--brand-primary)">➕</div>
+        background:var(--brand-primary-soft);min-height:215px">
+          <div style="display:flex;align-items:center;justify-content:center;
+            width:64px;height:64px;border-radius:50%;
+            background:var(--brand-primary);color:#fff;font-size:36px;
+            font-weight:700;line-height:1;margin-bottom:14px;
+            box-shadow:0 3px 10px rgba(22,163,74,.32)">+</div>
           <div style="font-size:16px;font-weight:800;color:var(--brand-primary-dark);
-            line-height:1.3;margin-bottom:6px">הוסף פרויקט חדש</div>
-          <div style="font-size:11.5px;color:var(--ink-soft)">
-            לחץ כדי להגדיר פרויקט חדש במערכת
+            line-height:1.3;margin-bottom:4px">הוסף פרויקט חדש</div>
+          <div style="font-size:11.5px;color:var(--ink-soft);line-height:1.4">
+            לחץ למטה כדי להגדיר פרויקט חדש
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    if st.button("➕ הוסף פרויקט חדש", key="btn_new_project_card",
+    if st.button("הוסף פרויקט חדש", key="btn_new_project_card",
                    use_container_width=True, type="primary"):
         st.session_state["show_new_project_form"] = True
         st.rerun()
