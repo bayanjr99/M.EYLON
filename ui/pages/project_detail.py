@@ -1486,6 +1486,123 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             st.dataframe(joined.sort_values("מס' קטגוריות", ascending=False),
                          use_container_width=True, hide_index=True)
 
+    # ════════════════════════════════════════════════════════
+    # בדיקות חיבור דלק-לכלי (Step 3 — 9 חריגות חדשות)
+    # ════════════════════════════════════════════════════════
+    from core.equipment_matcher import enrich_fuel_transactions
+    from pipeline import _load_tools_registry, load_fuel_invoices_data
+    eq_full = _load_tools_registry()
+
+    # נאסוף את כל מקורות הדלק (כמו ב-_subtab_fuel_purchases)
+    all_fuel_qa = []
+    solar_qa = df[df["source"] == "solar"] if "source" in df.columns else pd.DataFrame()
+    if not solar_qa.empty:
+        s = solar_qa.copy()
+        s["fuel_type"] = "סולר"
+        s["source_kind"] = "solar.xlsx"
+        s["total_cost"] = s.get("amount", 0)
+        s = s.rename(columns={"liters": "qty_liters"})
+        all_fuel_qa.append(s)
+    inv_qa = load_fuel_invoices_data(project_meta["project_id"])
+    if not inv_qa.empty:
+        i = inv_qa.copy()
+        i["fuel_type"] = "סולר"
+        i["source_kind"] = "fuel_invoices"
+        i = i.rename(columns={"item_description": "description", "liters": "qty_liters"})
+        all_fuel_qa.append(i)
+    if "main_category" in chash.columns:
+        cf = chash[chash["main_category"] == "דלק ואנרגיה"]
+        if not cf.empty:
+            sub_to_type = {
+                "סולר צמ\"ה": "סולר", "סולר רכבים": "סולר",
+                "בנזין רכבים": "בנזין", "טעינת חשמל רכבים": "חשמל",
+                "דלק לא מסווג": "לא מסווג",
+            }
+            c = cf.copy()
+            c["fuel_type"] = c["sub_category"].map(sub_to_type).fillna("לא מסווג")
+            c["source_kind"] = "chashbashevet"
+            c["qty_liters"] = None
+            c["total_cost"] = c.get("net_amount", c.get("amount", 0))
+            all_fuel_qa.append(c)
+
+    if all_fuel_qa and not eq_full.empty:
+        combined_qa = pd.concat(all_fuel_qa, ignore_index=True, sort=False)
+        for col in ("description", "license_num", "tool_name", "qty_liters", "total_cost"):
+            if col not in combined_qa.columns:
+                combined_qa[col] = None
+        enr = enrich_fuel_transactions(combined_qa, eq_full)
+
+        # ── 15. fuel_usage_without_equipment ──
+        sec("דלק ללא כלי מזוהה")
+        no_eq = enr[enr["matched_by"] == "unmatched"]
+        if no_eq.empty:
+            ins("green", "✓", "כל הדלק שויך לכלי", "")
+        else:
+            st.caption(f"{len(no_eq)} תנועות דלק ללא כלי. "
+                       f"₪{pd.to_numeric(no_eq['total_cost'], errors='coerce').fillna(0).sum():,.0f}")
+            cols = [c for c in ["date", "source_kind", "supplier", "description",
+                                  "fuel_type", "qty_liters", "total_cost", "match_note"]
+                    if c in no_eq.columns]
+            st.dataframe(no_eq[cols].head(50), use_container_width=True, hide_index=True)
+            if len(no_eq) > 50:
+                st.caption(f"מציג 50 מתוך {len(no_eq)}. כל החריגות ניתנות לייצוא בטאב סולר.")
+
+        # ── 16. fuel_type_mismatch + electric/diesel violations ──
+        sec("אי-התאמה בין סוג דלק לסוג כלי")
+        mismatch = enr[enr["validation_status"] == "error"]
+        if mismatch.empty:
+            ins("green", "✓", "אין אי-התאמות", "")
+        else:
+            cols = [c for c in ["date", "matched_tool_name", "matched_license_num",
+                                  "fuel_type", "validation_note", "total_cost"]
+                    if c in mismatch.columns]
+            st.dataframe(mismatch[cols], use_container_width=True, hide_index=True)
+
+        # ── 17. inactive_equipment_has_fuel ──
+        sec("דלק לכלי לא פעיל")
+        inactive_alerts = enr[enr["validation_note"].astype(str).str.contains("לא פעיל", na=False)]
+        if inactive_alerts.empty:
+            ins("green", "✓", "כל הדלק לכלים פעילים", "")
+        else:
+            st.caption(f"{len(inactive_alerts)} תנועות דלק לכלים מושבתים.")
+            cols = [c for c in ["date", "matched_tool_name", "matched_license_num",
+                                  "fuel_type", "total_cost"] if c in inactive_alerts.columns]
+            st.dataframe(inactive_alerts[cols], use_container_width=True, hide_index=True)
+
+        # ── 18. סטטיסטיקת matching וסיווג ──
+        sec("סטטיסטיקת חיבור דלק→כלים")
+        stats = {
+            "סה\"כ תנועות דלק": len(enr),
+            "התאמה: license_num": int((enr["matched_by"] == "license_num").sum()),
+            "התאמה: license מהפרטים": int((enr["matched_by"] == "license_in_description").sum()),
+            "התאמה: שם כלי": int((enr["matched_by"] == "tool_name").sum()),
+            "התאמה: חלקי": int((enr["matched_by"] == "partial_tool_name").sum()),
+            "לא מותאם": int((enr["matched_by"] == "unmatched").sum()),
+        }
+        st.dataframe(pd.DataFrame([{"מקור התאמה": k, "כמות": v} for k, v in stats.items()]),
+                     use_container_width=True, hide_index=True)
+
+    # ── 19. סטטיסטיקת fuel_rules: excel vs fallback ──
+    sec("מקור סיווג דלק: fuel_rules.xlsx vs fallback")
+    fuel_rows_all = chash[chash["main_category"] == "דלק ואנרגיה"] \
+        if "main_category" in chash.columns else pd.DataFrame()
+    if fuel_rows_all.empty:
+        st.caption("אין תנועות דלק.")
+    else:
+        note_col = fuel_rows_all["classification_note"].astype(str)
+        excel_count = int(note_col.str.contains("fuel_rules.xlsx").sum())
+        fallback_count = int(note_col.str.contains("fallback").sum())
+        manual_count = int(note_col.str.startswith("חשבון 74327").sum())  # legacy hardcoded
+        unknown_count = len(fuel_rows_all) - excel_count - fallback_count - manual_count
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("מ-fuel_rules.xlsx", str(excel_count))
+        c2.metric("מ-fallback hardcoded", str(fallback_count))
+        c3.metric("ישן (legacy)", str(manual_count))
+        c4.metric("אחר/לא ידוע", str(unknown_count))
+        if fallback_count > 0:
+            ins("amber", "⚠️", f"{fallback_count} תנועות סווגו ע\"י fallback hardcoded",
+                "מומלץ להוסיף כללים מתאימים ל-fuel_rules.xlsx")
+
     # ── 14. ספקים עם סכומים חריגים (top 5 outliers ביחס לחציון) ──
     sec("ספקים עם סכומים חריגים", meta="חריגות סטטיסטיות (z-score > 3)")
     if not expenses.empty:
@@ -2155,6 +2272,214 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                     disp.columns = [heb.get(c, c) for c in show_cols]
                     st.markdown("**פירוט תנועות**")
                     st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── דלק לפי כלי - שילוב מקורות + matching ל-equipment ──
+    sec("דלק לפי כלי", meta="חיבור אוטומטי ל-tools_registry")
+    from core.equipment_matcher import enrich_fuel_transactions
+    from pipeline import _load_tools_registry, load_fuel_invoices_data
+    equipment = _load_tools_registry()
+    if equipment.empty:
+        st.caption("אין כלים ב-tools_registry — לא ניתן להתאים.")
+    else:
+        # איסוף כל מקורות הדלק (לאיחוד)
+        all_fuel = []
+
+        # מקור 1: solar.xlsx (Pointer) - יש license_num ישיר
+        solar_rows = df[df["source"] == "solar"] if "source" in df.columns else pd.DataFrame()
+        if not solar_rows.empty:
+            s = solar_rows.copy()
+            s["fuel_type"] = "סולר"  # Pointer הוא סולר בלבד
+            s["source_kind"] = "solar.xlsx"
+            s = s.rename(columns={"liters": "qty_liters"})
+            if "amount" in s.columns:
+                s["total_cost"] = s["amount"]
+            else:
+                s["total_cost"] = 0
+            all_fuel.append(s)
+
+        # מקור 2: fuel_invoices.parquet - יש license בתיאור
+        inv = load_fuel_invoices_data(project_meta["project_id"])
+        if not inv.empty:
+            i = inv.copy()
+            i["fuel_type"] = "סולר"  # רובם סולר; אפשר לעדן בעתיד
+            i["source_kind"] = "fuel_invoices"
+            i = i.rename(columns={"item_description": "description",
+                                    "liters": "qty_liters"})
+            all_fuel.append(i)
+
+        # מקור 3: chashbashevet fuel rows (74317/74327)
+        chash_fuel = chash[chash["main_category"] == "דלק ואנרגיה"] \
+            if "main_category" in chash.columns else pd.DataFrame()
+        if not chash_fuel.empty:
+            c = chash_fuel.copy()
+            # נסה לזהות fuel_type לפי sub_category
+            sub_to_type = {
+                "סולר צמ\"ה": "סולר", "סולר רכבים": "סולר",
+                "בנזין רכבים": "בנזין", "טעינת חשמל רכבים": "חשמל",
+                "דלק לא מסווג": "לא מסווג",
+            }
+            c["fuel_type"] = c["sub_category"].map(sub_to_type).fillna("לא מסווג")
+            c["source_kind"] = "chashbashevet"
+            c["qty_liters"] = None  # אין ליטרים בכרטיס
+            if "net_amount" in c.columns:
+                c["total_cost"] = c["net_amount"]
+            else:
+                c["total_cost"] = c["amount"]
+            all_fuel.append(c)
+
+        if not all_fuel:
+            st.caption("אין נתוני דלק בכלל.")
+        else:
+            combined = pd.concat(all_fuel, ignore_index=True, sort=False)
+            # נרמל עמודות חסרות
+            for col in ("description", "license_num", "tool_name", "fuel_type",
+                          "qty_liters", "total_cost"):
+                if col not in combined.columns:
+                    combined[col] = None
+
+            # Enrich: equipment_id + matched_by + match_confidence + validation
+            enriched = enrich_fuel_transactions(
+                combined, equipment,
+                license_col="license_num", tool_name_col="tool_name",
+                description_col="description", fuel_type_col="fuel_type",
+            )
+
+            # ── סטטיסטיקת matching ──
+            n_total = len(enriched)
+            n_matched = int((enriched["matched_by"] != "unmatched").sum())
+            n_high = int((enriched["match_confidence"] == "high").sum())
+            n_low = int((enriched["match_confidence"] == "low").sum())
+            n_err = int((enriched["validation_status"] == "error").sum())
+            n_warn = int((enriched["validation_status"] == "warning").sum())
+            mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+            mk1.metric("סה\"כ תנועות דלק", str(n_total))
+            mk2.metric("הותאמו לכלי", str(n_matched),
+                         delta=f"{(n_matched/n_total*100):.0f}%" if n_total else None)
+            mk3.metric("בטחון גבוה", str(n_high))
+            mk4.metric("אזהרות validation", str(n_warn))
+            mk5.metric("שגיאות validation", str(n_err))
+
+            # ── סיכום לפי כלי ──
+            matched = enriched[enriched["matched_by"] != "unmatched"].copy()
+            if not matched.empty:
+                # קישור לכלי המקורי
+                eq_lookup = equipment.set_index("license_num", drop=False)
+                summary = matched.groupby("matched_license_num").agg(
+                    tool_name=("matched_tool_name",
+                                  lambda s: s.dropna().iloc[0] if s.notna().any() else ""),
+                    n_tx=("matched_by", "size"),
+                    total_liters=("qty_liters", lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()),
+                    total_cost=("total_cost", lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()),
+                    n_months=("month", lambda s: s.nunique() if "month" in matched.columns else 0),
+                    n_errors=("validation_status", lambda s: (s == "error").sum()),
+                ).reset_index()
+                # הוסף מטא-נתונים מהכלי
+                summary["equipment_group"] = summary["matched_license_num"].map(
+                    lambda lic: eq_lookup.loc[lic].get("equipment_group", "")
+                    if lic in eq_lookup.index else ""
+                )
+                summary["fuel_type_defined"] = summary["matched_license_num"].map(
+                    lambda lic: eq_lookup.loc[lic].get("fuel_type", "")
+                    if lic in eq_lookup.index else ""
+                )
+                summary["status"] = summary["n_errors"].apply(
+                    lambda n: "❌ חריגה" if n else "✓ תקין")
+                summary["total_liters"] = summary["total_liters"].round(0)
+                summary["total_cost"] = summary["total_cost"].round(0)
+
+                disp = summary[["matched_license_num", "tool_name", "equipment_group",
+                                  "fuel_type_defined", "total_liters", "total_cost",
+                                  "n_tx", "n_months", "status"]].copy()
+                disp.columns = ["מס' רישוי", "שם כלי", "קבוצה", "סוג דלק מוגדר",
+                                "ליטרים", "סה\"כ ₪", "תנועות", "חודשים", "סטטוס"]
+                st.dataframe(disp.sort_values("סה\"כ ₪", ascending=False),
+                             use_container_width=True, hide_index=True)
+            else:
+                st.caption("אף תנועת דלק לא הצליחה להתאים לכלי.")
+
+            # ── תנועות לא מותאמות ──
+            unmatched = enriched[enriched["matched_by"] == "unmatched"]
+            if not unmatched.empty:
+                sec(f"דלק ללא כלי מזוהה ({len(unmatched)} תנועות)",
+                    meta="דורש הוספת הכלי ל-tools_registry או בחירה ידנית")
+                cols = [c for c in ["date", "month", "source_kind", "supplier",
+                                      "description", "qty_liters", "total_cost",
+                                      "fuel_type", "match_note"]
+                        if c in unmatched.columns]
+                heb = {"date": "תאריך", "month": "חודש", "source_kind": "מקור",
+                       "supplier": "ספק", "description": "פרטים",
+                       "qty_liters": "ליטרים", "total_cost": "₪", "fuel_type": "סוג דלק",
+                       "match_note": "הערת התאמה"}
+                disp_u = unmatched[cols].copy()
+                for c in ("qty_liters", "total_cost"):
+                    if c in disp_u.columns:
+                        disp_u[c] = pd.to_numeric(disp_u[c], errors="coerce").round(0)
+                disp_u.columns = [heb.get(c, c) for c in cols]
+                st.dataframe(disp_u, use_container_width=True, hide_index=True)
+
+                # ייצוא חריגות
+                from io import BytesIO
+                buf = BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    disp_u.to_excel(writer, sheet_name="לא מותאמים", index=False)
+                st.download_button(
+                    f"⬇️ ייצוא {len(unmatched)} תנועות לא מותאמות לאקסל",
+                    data=buf.getvalue(),
+                    file_name=f"fuel_unmatched_{project_meta['project_id']}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+            # ── חריגות validation ──
+            errors = enriched[enriched["validation_status"] == "error"]
+            if not errors.empty:
+                sec(f"⚠️ חריגות validation ({len(errors)})",
+                    meta="אי-התאמה בין סוג דלק לסוג כלי")
+                cols = [c for c in ["date", "matched_tool_name", "matched_license_num",
+                                      "fuel_type", "validation_note", "total_cost"]
+                        if c in errors.columns]
+                heb = {"date": "תאריך", "matched_tool_name": "כלי",
+                       "matched_license_num": "רישוי", "fuel_type": "סוג דלק בתנועה",
+                       "validation_note": "תיאור החריגה", "total_cost": "₪"}
+                disp_e = errors[cols].copy()
+                if "total_cost" in disp_e.columns:
+                    disp_e["total_cost"] = pd.to_numeric(disp_e["total_cost"],
+                                                          errors="coerce").round(0)
+                disp_e.columns = [heb.get(c, c) for c in cols]
+                st.dataframe(disp_e, use_container_width=True, hide_index=True)
+
+            # ── Drill-down: בחר כלי לראות את כל תנועות הדלק שלו ──
+            if not matched.empty:
+                sec("בחר כלי לפירוט תנועות")
+                tools_for_pick = sorted([
+                    (int(r["matched_license_num"]), str(r["matched_tool_name"]))
+                    for _, r in matched.drop_duplicates("matched_license_num").iterrows()
+                    if pd.notna(r["matched_license_num"])
+                ])
+                if tools_for_pick:
+                    options = ["— בחר —"] + [f"{lic} · {name}" for lic, name in tools_for_pick]
+                    picked = st.selectbox("כלי", options,
+                                            key=f"fuel_drill_{project_meta['project_id']}")
+                    if picked and picked != "— בחר —":
+                        pick_lic = int(picked.split(" · ", 1)[0])
+                        tool_tx = matched[matched["matched_license_num"] == pick_lic]
+                        cols = [c for c in ["date", "month", "source_kind", "supplier",
+                                              "invoice_num", "fuel_type", "qty_liters",
+                                              "total_cost", "description", "match_note",
+                                              "validation_note"]
+                                if c in tool_tx.columns]
+                        heb = {"date": "תאריך", "month": "חודש", "source_kind": "מקור",
+                               "supplier": "ספק", "invoice_num": "חשבונית",
+                               "fuel_type": "סוג דלק", "qty_liters": "ליטרים",
+                               "total_cost": "₪", "description": "פרטים",
+                               "match_note": "הערת התאמה", "validation_note": "validation"}
+                        disp_t = tool_tx[cols].copy()
+                        for c in ("qty_liters", "total_cost"):
+                            if c in disp_t.columns:
+                                disp_t[c] = pd.to_numeric(disp_t[c],
+                                                            errors="coerce").round(0)
+                        disp_t.columns = [heb.get(c, c) for c in cols]
+                        st.dataframe(disp_t.sort_values("תאריך" if "תאריך" in disp_t.columns else disp_t.columns[0]),
+                                     use_container_width=True, hide_index=True)
 
     # ── מקור 2 (לשעבר היה ראשי): דוח רכש פריטים - חשבונית-לחשבונית ──
     sec("חשבוניות סולר ברמת פירוט", meta="מ-fuel_invoices.xlsx (דוח רכש פריטים)")
