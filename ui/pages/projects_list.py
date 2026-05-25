@@ -126,8 +126,34 @@ def _render_new_project_form(existing_projects: list[dict]) -> None:
             st.rerun()
 
 
+def _render_add_project_card() -> None:
+    """כרטיס 'הוסף פרויקט' שמופיע ברשת ליד שאר הפרויקטים."""
+    import streamlit as st
+    st.markdown(
+        """
+        <div class="section-card" style="padding:30px 22px;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        text-align:center;border:2px dashed var(--brand-primary-mid);
+        background:var(--brand-primary-soft);min-height:280px">
+          <div style="font-size:48px;line-height:1;margin-bottom:10px;
+            color:var(--brand-primary)">➕</div>
+          <div style="font-size:16px;font-weight:800;color:var(--brand-primary-dark);
+            line-height:1.3;margin-bottom:6px">הוסף פרויקט חדש</div>
+          <div style="font-size:11.5px;color:var(--ink-soft)">
+            לחץ כדי להגדיר פרויקט חדש במערכת
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("➕ הוסף פרויקט חדש", key="btn_new_project_card",
+                   use_container_width=True, type="primary"):
+        st.session_state["show_new_project_form"] = True
+        st.rerun()
+
+
 def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
-    """מציג רשת כרטיסים — אחד לכל פרויקט מ-projects_registry.
+    """מציג רשת כרטיסים — אחד לכל פרויקט + כרטיס 'הוסף פרויקט' בסוף.
 
     Args:
         df_master: ה-master.parquet (לחישוב KPIs לכל פרויקט).
@@ -135,41 +161,35 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
     """
     import streamlit as st
 
-    # ── כפתור 'הוסף פרויקט חדש' ──
+    # ── אם הטופס פתוח - מציגים אותו במקום הרשת ──
     if st.session_state.get("show_new_project_form"):
         _render_new_project_form(projects)
-        st.markdown("---")
-    else:
-        col_add, _ = st.columns([2, 5])
-        with col_add:
-            if st.button("➕ הוסף פרויקט חדש", type="primary",
-                           use_container_width=True, key="btn_new_project"):
-                st.session_state["show_new_project_form"] = True
-                st.rerun()
+        return
 
     if not projects:
-        empty_state(
-            icon="ti-buildings",
-            title="לא נמצאו פרויקטים",
-            body_html=(
-                "כדי להתחיל, לחץ <b>➕ הוסף פרויקט חדש</b> למעלה, "
-                "או רשום פרויקט ידנית ב-"
-                "<code>data/projects_registry.xlsx</code>."
-            ),
-        )
+        # אין פרויקטים - מציגים רק את כרטיס ההוספה
+        sec("ברוך הבא", meta="עדיין אין פרויקטים במערכת")
+        col_center, _ = st.columns([1, 1])
+        with col_center:
+            _render_add_project_card()
         return
 
     sec("בחר פרויקט", meta=f"{len(projects)} פרויקטים ברגיסטרי")
 
-    # 2 כרטיסים בכל שורה (responsive — Streamlit עוטף אוטומטית)
+    # רשת כרטיסים: כרטיסי פרויקטים + כרטיס הוסף בסוף
     cols_per_row = 2
-    rows = [projects[i:i + cols_per_row] for i in range(0, len(projects), cols_per_row)]
+    # בונים רשימה של "תאי תצוגה" - dict עם project או "add"
+    cells: list[dict | str] = list(projects) + ["__ADD__"]
+    rows = [cells[i:i + cols_per_row] for i in range(0, len(cells), cols_per_row)]
 
     for row in rows:
         cols = st.columns(cols_per_row)
-        for col, proj in zip(cols, row):
+        for col, cell in zip(cols, row):
             with col:
-                _render_project_card(proj, df_master)
+                if cell == "__ADD__":
+                    _render_add_project_card()
+                else:
+                    _render_project_card(cell, df_master)
 
 
 def _render_project_card(proj: dict, df_master: pd.DataFrame) -> None:
