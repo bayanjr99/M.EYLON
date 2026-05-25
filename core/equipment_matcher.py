@@ -226,17 +226,22 @@ def enrich_fuel_transactions(df: pd.DataFrame,
                               tool_name_col: str = "tool_name",
                               description_col: str = "description",
                               fuel_type_col: str = "fuel_type") -> pd.DataFrame:
-    """מוסיף עמודות match + validation לכל שורה ב-df.
+    """מוסיף עמודות match + validation + equipment metadata.
 
-    Returns DataFrame עם:
-      equipment_id, matched_license_num, matched_tool_name, matched_by,
-      match_confidence, match_note, validation_status, validation_note.
+    Returns DataFrame עם 11 שדות חדשים:
+      equipment_id, matched_license_num, matched_tool_name,
+      matched_by, match_confidence, match_note,
+      validation_status, validation_note,
+      equipment_group, fuel_type_of_equipment, fuel_type_actual,
+      extracted_license (אם חולץ מהפרטים גם בלי התאמה).
     """
     if df.empty:
         return df.assign(
             equipment_id=None, matched_license_num=None, matched_tool_name="",
             matched_by="", match_confidence="", match_note="",
             validation_status="", validation_note="",
+            equipment_group="", fuel_type_of_equipment="",
+            fuel_type_actual="", extracted_license=None,
         )
 
     eq_indexed = equipment_df.set_index("license_num", drop=False) \
@@ -251,12 +256,11 @@ def enrich_fuel_transactions(df: pd.DataFrame,
             description=row.get(description_col, ""),
             equipment_df=equipment_df,
         )
-        # Validation
         eq_row = None
         if match["matched_license_num"] is not None and not eq_indexed.empty:
             try:
                 eq_row = eq_indexed.loc[match["matched_license_num"]]
-                if isinstance(eq_row, pd.DataFrame):  # multiple matches
+                if isinstance(eq_row, pd.DataFrame):
                     eq_row = eq_row.iloc[0]
             except KeyError:
                 eq_row = None
@@ -264,6 +268,20 @@ def enrich_fuel_transactions(df: pd.DataFrame,
             row.get(fuel_type_col, ""), eq_row,
         )
         match.update(validation)
+
+        # 3 שדות מטא-נתונים נוספים (מהכלי + מהתנועה)
+        if eq_row is not None and not (hasattr(eq_row, "empty") and eq_row.empty):
+            match["equipment_group"] = str(eq_row.get("equipment_group") or "")
+            match["fuel_type_of_equipment"] = str(eq_row.get("fuel_type") or "")
+        else:
+            match["equipment_group"] = ""
+            match["fuel_type_of_equipment"] = ""
+        match["fuel_type_actual"] = str(row.get(fuel_type_col) or "")
+
+        # extracted_license: גם אם לא הצליח להתאים, להראות מה חולץ
+        ext = extract_license_from_text(str(row.get(description_col) or ""))
+        match["extracted_license"] = ext
+
         results.append(match)
 
     enrich_df = pd.DataFrame(results)
@@ -271,3 +289,31 @@ def enrich_fuel_transactions(df: pd.DataFrame,
     for col in enrich_df.columns:
         out[col] = enrich_df[col].values
     return out
+
+
+def unmatched_vehicle_candidates(enriched_df: pd.DataFrame) -> pd.DataFrame:
+    """מאתר רכבים שמופיעים בתיאורים אך לא קיימים ב-tools_registry.
+
+    שימושי: המשתמש יכול לראות בלחיצה אחת אילו רכבים חסרים, ולהוסיף אותם.
+
+    Returns DataFrame עם: extracted_license, sample_description, n_tx, total_cost.
+    """
+    cols = ["extracted_license", "sample_description", "n_tx", "total_cost"]
+    if enriched_df.empty:
+        return pd.DataFrame(columns=cols)
+    unmatched = enriched_df[
+        (enriched_df["matched_by"] == "unmatched") &
+        (enriched_df["extracted_license"].notna())
+    ]
+    if unmatched.empty:
+        return pd.DataFrame(columns=cols)
+    g = unmatched.groupby("extracted_license").agg(
+        sample_description=("description",
+                              lambda s: s.dropna().iloc[0] if s.notna().any() else ""),
+        n_tx=("matched_by", "size"),
+        total_cost=("total_cost",
+                      lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()),
+    ).reset_index()
+    g["total_cost"] = g["total_cost"].round(0)
+    g["extracted_license"] = g["extracted_license"].astype(int)
+    return g.sort_values("total_cost", ascending=False)

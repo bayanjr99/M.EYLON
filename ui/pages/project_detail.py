@@ -1569,6 +1569,36 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
                                   "fuel_type", "total_cost"] if c in inactive_alerts.columns]
             st.dataframe(inactive_alerts[cols], use_container_width=True, hide_index=True)
 
+        # ── 17b. תדלוק ללא ליטרים ──
+        sec("תדלוק ללא ליטרים")
+        no_liters = enr[
+            pd.to_numeric(enr["qty_liters"], errors="coerce").isna() &
+            (enr["source_kind"] != "chashbashevet")  # chashbashevet לא נושא ליטרים
+        ]
+        if no_liters.empty:
+            ins("green", "✓", "כל התדלוקים כוללים ליטרים", "")
+        else:
+            cols = [c for c in ["date", "source_kind", "supplier",
+                                  "description", "total_cost"] if c in no_liters.columns]
+            st.dataframe(no_liters[cols].head(50),
+                         use_container_width=True, hide_index=True)
+            if len(no_liters) > 50:
+                st.caption(f"מציג 50 מתוך {len(no_liters)}.")
+
+        # ── 17c. תדלוק ללא project_id ──
+        sec("תדלוק ללא שיוך לפרויקט")
+        # בפועל - כל הדאטה כאן כבר מסונן לפרויקט, אבל בודקים שמופיע
+        if "project_id" in enr.columns:
+            no_proj = enr[enr["project_id"].fillna("").astype(str) == ""]
+            if no_proj.empty:
+                ins("green", "✓", "כל התדלוקים משויכים לפרויקט", "")
+            else:
+                cols = [c for c in ["date", "source_kind", "supplier",
+                                      "description", "total_cost"] if c in no_proj.columns]
+                st.dataframe(no_proj[cols], use_container_width=True, hide_index=True)
+        else:
+            st.caption("אין עמודת project_id לבדוק.")
+
         # ── 18. סטטיסטיקת matching וסיווג ──
         sec("סטטיסטיקת חיבור דלק→כלים")
         stats = {
@@ -2396,6 +2426,41 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                              use_container_width=True, hide_index=True)
             else:
                 st.caption("אף תנועת דלק לא הצליחה להתאים לכלי.")
+
+            # ── רכבים שזוהו בתיאור אבל חסרים ב-registry ──
+            from core.equipment_matcher import unmatched_vehicle_candidates
+            candidates = unmatched_vehicle_candidates(enriched)
+            if not candidates.empty:
+                sec("רכבים מזוהים בתיאור אבל חסרים ב-tools_registry",
+                    meta="הוסף אותם ב-טאב 'כלים → רשימת כלים' להתאמה אוטומטית")
+                ins("amber", "⚠️", f"זוהו {len(candidates)} רכבים חסרים",
+                    "המערכת חילצה את מספרי הרישוי מהפרטים אך לא מצאה אותם ב-tools_registry. "
+                    "הוסף אותם כדי שהדלק יתאים אוטומטית בעתיד.")
+                cand_disp = candidates.copy()
+                # זיהוי סוג דלק לפי הפרטים הראשון
+                def _guess_fuel_type(desc):
+                    d = (desc or "").lower()
+                    if any(k in d for k in ["טעינת רכב חשמלי", "רכב חשמלי", "אפקון", "תחבורה חשמלית"]):
+                        return "חשמל"
+                    if "בנזין" in d: return "בנזין"
+                    if "סולר" in d: return "סולר"
+                    return "לא ידוע"
+                cand_disp["סוג דלק משוער"] = cand_disp["sample_description"].apply(_guess_fuel_type)
+                cand_disp.columns = ["מס' רישוי שחולץ", "פרטים לדוגמה",
+                                       "תנועות", "סה\"כ (₪)", "סוג דלק משוער"]
+                st.dataframe(cand_disp, use_container_width=True, hide_index=True)
+
+                # ייצוא הרכבים החסרים לאקסל
+                from io import BytesIO
+                bbuf = BytesIO()
+                with pd.ExcelWriter(bbuf, engine="openpyxl") as writer:
+                    cand_disp.to_excel(writer, sheet_name="רכבים חסרים", index=False)
+                st.download_button(
+                    f"⬇️ ייצוא רשימת {len(candidates)} רכבים חסרים",
+                    data=bbuf.getvalue(),
+                    file_name=f"missing_vehicles_{project_meta['project_id']}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
             # ── תנועות לא מותאמות ──
             unmatched = enriched[enriched["matched_by"] == "unmatched"]
