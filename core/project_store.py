@@ -392,8 +392,13 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
         else:
             normalized[k] = v
 
-    # החלת השינויים על שורת הרגיסטרי
+    # החלת השינויים על שורת הרגיסטרי.
+    # pandas 2.x קפדני על dtypes: עמודה שנטענה כ-float64 (כי כל הערכים NaN)
+    # תזרוק TypeError אם ננסה לכתוב מחרוזת. ננרמל הכל לאובייקט קודם.
     mask = registry["project_id"].astype(str) == pid
+    for k in normalized.keys():
+        if k in registry.columns:
+            registry[k] = registry[k].astype(object)
     for k, v in normalized.items():
         registry.loc[mask, k] = v
 
