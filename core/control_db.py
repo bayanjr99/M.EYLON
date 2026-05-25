@@ -174,6 +174,30 @@ CREATE INDEX IF NOT EXISTS idx_dq_proj_month ON data_quality_issues(project_id, 
 CREATE INDEX IF NOT EXISTS idx_dq_status     ON data_quality_issues(status);
 CREATE INDEX IF NOT EXISTS idx_dq_check      ON data_quality_issues(check_type);
 
+-- Projects master (mirror of projects_registry.xlsx, mutable from UI)
+CREATE TABLE IF NOT EXISTS projects (
+    project_id      TEXT PRIMARY KEY,
+    project_name    TEXT NOT NULL,
+    site_name       TEXT,
+    status          TEXT DEFAULT 'active',
+    start_date      TEXT,
+    notes           TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+-- Suppliers master (derived from chashbashevet, with manual category overrides)
+CREATE TABLE IF NOT EXISTS suppliers (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_name     TEXT UNIQUE NOT NULL,
+    primary_category  TEXT,
+    notes             TEXT,
+    manual_override   INTEGER DEFAULT 0,  -- 1 if user explicitly set category
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sup_category ON suppliers(primary_category);
+
 -- Fleet-wide tools registry (NOT per-project — same fleet works across sites).
 -- Mirrors data/tools_registry.xlsx but mutable from the UI.
 CREATE TABLE IF NOT EXISTS tools_registry (
@@ -526,6 +550,112 @@ def merged_tools_registry(xlsx_path: str | Path | None = None) -> pd.DataFrame:
     sqlite_lics = set(sqlite_tools["license_num"].dropna().astype(int).tolist())
     xlsx_only = xlsx_tools[~xlsx_tools["license_num"].isin(sqlite_lics)]
     return pd.concat([xlsx_only, sqlite_tools], ignore_index=True, sort=False)
+
+
+# ── Projects mirror (from projects_registry.xlsx) ──────────────
+def sync_projects_from_xlsx(xlsx_path: str | Path) -> int:
+    """Mirror projects_registry.xlsx → projects table.
+
+    Idempotent upsert. Returns the number of projects upserted.
+    """
+    init()
+    path = Path(xlsx_path)
+    if not path.exists():
+        return 0
+    try:
+        df = pd.read_excel(path, engine="openpyxl")
+    except Exception:
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    n = 0
+    with _connect() as conn:
+        for _, r in df.iterrows():
+            pid = str(r.get("project_id", "") or "").strip()
+            if not pid:
+                continue
+            existing = conn.execute(
+                "SELECT project_id FROM projects WHERE project_id = ?", [pid]
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE projects SET project_name=?, site_name=?, status=?,
+                       start_date=?, notes=?, updated_at=? WHERE project_id=?""",
+                    [str(r.get("project_name", "") or ""),
+                     str(r.get("site_name", "") or ""),
+                     str(r.get("status", "active") or "active"),
+                     str(r.get("start_date", "") or ""),
+                     str(r.get("notes", "") or ""), now, pid],
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO projects (project_id, project_name, site_name,
+                       status, start_date, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [pid, str(r.get("project_name", "") or ""),
+                     str(r.get("site_name", "") or ""),
+                     str(r.get("status", "active") or "active"),
+                     str(r.get("start_date", "") or ""),
+                     str(r.get("notes", "") or ""), now, now],
+                )
+            n += 1
+    return n
+
+
+def list_projects() -> pd.DataFrame:
+    """כל הפרויקטים מהטבלה."""
+    init()
+    with _connect() as conn:
+        return pd.read_sql("SELECT * FROM projects ORDER BY project_id", conn)
+
+
+# ── Suppliers mirror ───────────────────────────────────────────
+def sync_suppliers_from_master(df_master: pd.DataFrame) -> int:
+    """מוסיף ספקים חדשים שמופיעים ב-master, בלי לדרוס overrides ידניים."""
+    if df_master.empty or "supplier" not in df_master.columns:
+        return 0
+    init()
+    # Derive category per supplier (dominant by amount)
+    exp = df_master[df_master["amount"] > 0] if "amount" in df_master.columns else df_master
+    exp = exp[exp["supplier"].fillna("").astype(str).str.strip() != ""]
+    if exp.empty:
+        return 0
+    sc = exp.groupby(["supplier", "category"])["amount"].sum().reset_index()
+    primary = sc.sort_values("amount", ascending=False).drop_duplicates(subset=["supplier"])
+    primary = dict(zip(primary["supplier"], primary["category"]))
+
+    now = datetime.now().isoformat(timespec="seconds")
+    n = 0
+    with _connect() as conn:
+        for sup, cat in primary.items():
+            existing = conn.execute(
+                "SELECT id, manual_override FROM suppliers WHERE supplier_name = ?",
+                [sup],
+            ).fetchone()
+            if existing:
+                # only update category if no manual override
+                if not existing["manual_override"]:
+                    conn.execute(
+                        "UPDATE suppliers SET primary_category=?, updated_at=? WHERE id=?",
+                        [cat, now, existing["id"]],
+                    )
+            else:
+                conn.execute(
+                    """INSERT INTO suppliers
+                       (supplier_name, primary_category, manual_override, created_at, updated_at)
+                       VALUES (?, ?, 0, ?, ?)""",
+                    [sup, cat, now, now],
+                )
+                n += 1
+    return n
+
+
+def list_suppliers() -> pd.DataFrame:
+    init()
+    with _connect() as conn:
+        return pd.read_sql(
+            "SELECT * FROM suppliers ORDER BY primary_category, supplier_name",
+            conn,
+        )
 
 
 def count_rows(project_id: str) -> dict[str, int]:

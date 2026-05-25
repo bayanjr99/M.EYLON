@@ -16,6 +16,7 @@ import pandas as pd
 
 from core import (
     anomaly_detector,
+    balance_loader,
     categorizer,
     chashbashevet_loader,
     fuel_inventory,
@@ -84,6 +85,32 @@ def list_available_months(project_id: str) -> list[str]:
 
 
 SITE_TRACKING_PARQUET = DATA_ROOT / "site_tracking.parquet"
+
+
+def load_project_balances(project_id: str) -> pd.DataFrame:
+    """אוסף מאזן בוחן מכל החודשים של פרויקט. מוסיף עמודת month."""
+    project_dir = PROJECTS_ROOT / project_id
+    if not project_dir.exists():
+        return pd.DataFrame(columns=balance_loader.OUTPUT_COLS + ["month"])
+
+    frames = []
+    for month_dir in sorted(project_dir.iterdir()):
+        if not month_dir.is_dir() or "-" not in month_dir.name:
+            continue
+        bp = _find_file(month_dir, ["balance", "מאזן"], "balance.xlsx")
+        if bp and "fuel_inventory" in bp.name.lower():
+            bp = None
+        if not bp:
+            continue
+        df = balance_loader.load_balance(bp)
+        if df.empty:
+            continue
+        df = df.copy()
+        df["month"] = month_dir.name
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=balance_loader.OUTPUT_COLS + ["month"])
+    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def load_project_site_tracking(project_id: str) -> dict[str, pd.DataFrame]:
@@ -262,8 +289,20 @@ def load_project_month(project_id: str, month: str) -> dict[str, pd.DataFrame]:
     )
     _log(hours_path, "hours", len(out["hours"]))
 
+    # מאזן בוחן (אופציונלי, end-of-month balance — משלים את הכרטיס)
+    balance_path = _find_file(month_dir, ["balance", "מאזן"], "balance.xlsx")
+    # אבל לא להתבלבל עם "fuel_inventory" שמכיל גם "מלאי" - תסנן
+    if balance_path and "fuel_inventory" in balance_path.name.lower():
+        balance_path = None
+    out["balance"] = (
+        balance_loader.load_balance(balance_path)
+        if balance_path
+        else pd.DataFrame(columns=balance_loader.OUTPUT_COLS)
+    )
+    _log(balance_path, "balance", len(out["balance"]))
+
     # מאזן מלאי סולר (אופציונלי)
-    inv_path = _find_file(month_dir, ["fuel_inventory", "מלאי סולר", "מלאי"],
+    inv_path = _find_file(month_dir, ["fuel_inventory", "מלאי סולר"],
                           "fuel_inventory.xlsx")
     out["fuel_inventory"] = (
         fuel_inventory.load_fuel_inventory(inv_path)
@@ -488,6 +527,15 @@ def build_master() -> pd.DataFrame:
         build_site_tracking_parquet()
     except Exception as e:
         logger.exception("site_tracking parquet build failed (non-fatal): %s", e)
+
+    # Sync projects + suppliers mirrors (non-fatal)
+    try:
+        from core import control_db
+        n_p = control_db.sync_projects_from_xlsx(PROJECTS_REGISTRY)
+        n_s = control_db.sync_suppliers_from_master(master)
+        logger.info("Synced %d projects, %d suppliers to control_db", n_p, n_s)
+    except Exception as e:
+        logger.exception("projects/suppliers sync failed (non-fatal): %s", e)
 
     return master
 

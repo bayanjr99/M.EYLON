@@ -113,6 +113,58 @@ def by_supplier(df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
     return grouped[cols]
 
 
+def suppliers_categorized(df: pd.DataFrame, top_n: int = 100) -> pd.DataFrame:
+    """ספקים עם הקטגוריה הדומיננטית שלהם (לפי הסכום הכי גדול).
+
+    Returns DataFrame עם: supplier, primary_category, total_amount,
+    num_transactions, num_categories, secondary_categories.
+    """
+    cols = ["supplier", "primary_category", "total_amount", "num_transactions",
+            "num_categories", "secondary_categories"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    data = _expenses_only(df)
+    data = data[data["supplier"].notna() & (data["supplier"] != "")]
+    if data.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Per (supplier, category) sum
+    sc = data.groupby(["supplier", "category"])["amount"].sum().reset_index()
+
+    rows = []
+    for sup, grp in sc.groupby("supplier"):
+        grp_sorted = grp.sort_values("amount", ascending=False)
+        primary = grp_sorted.iloc[0]["category"]
+        total = float(grp["amount"].sum())
+        n_cats = len(grp)
+        secondary = grp_sorted.iloc[1:]["category"].tolist() if n_cats > 1 else []
+        n_tx = int(data[data["supplier"] == sup].shape[0])
+        rows.append({
+            "supplier": sup,
+            "primary_category": primary,
+            "total_amount": round(total, 0),
+            "num_transactions": n_tx,
+            "num_categories": n_cats,
+            "secondary_categories": ", ".join(secondary[:3]) if secondary else "",
+        })
+
+    out = pd.DataFrame(rows, columns=cols).sort_values("total_amount", ascending=False)
+    return out.head(top_n)
+
+
+def suppliers_by_category(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """מחזיר dict: category → DataFrame של ספקים בקטגוריה.
+
+    שימושי להצגת tab/section נפרד לכל קטגוריה.
+    """
+    cat_df = suppliers_categorized(df, top_n=10_000)
+    if cat_df.empty:
+        return {}
+    return {cat: grp.reset_index(drop=True)
+            for cat, grp in cat_df.groupby("primary_category")}
+
+
 def supplier_month_matrix(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
     """מטריצת ספק × חודש (pivot)."""
     if df.empty:

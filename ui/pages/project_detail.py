@@ -162,7 +162,7 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         with sub[2]:
             _tab_transactions(df)
         with sub[3]:
-            _subtab_accounts_rollup(df)
+            _subtab_accounts_rollup(df, project_meta)
         with sub[4]:
             _subtab_collection_status(df)
 
@@ -492,20 +492,40 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
             st.dataframe(agg, use_container_width=True, hide_index=True)
 
 
-# ─── Tab 5: ספקים וקבלנים (עם site_tracking) ────────────────
+# ─── Tab 5: ספקים וקבלנים (עם site_tracking + סיווג) ───────
 def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     from pipeline import load_site_tracking_data
     project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
 
-    sec("Top 30 ספקים בפרויקט")
-    sup = project_aggregator.by_supplier(df, top_n=30)
-    if sup.empty:
+    # ── 1. Top ספקים עם קטגוריה דומיננטית ──
+    sec("Top 30 ספקים - עם קטגוריה אוטומטית")
+    sup_cat = project_aggregator.suppliers_categorized(df, top_n=30)
+    if sup_cat.empty:
         ins("blue", "ℹ️", "אין ספקים מתועדים", "ספקים מחולצים מ-'פרטים' בכרטיס ההנהלה.")
     else:
-        disp = sup.copy()
-        disp["total_amount"] = disp["total_amount"].round(0)
-        disp.columns = ["ספק", "סה\"כ (₪)", "תנועות", "פרויקטים", "מתאריך", "עד תאריך"]
+        disp = sup_cat.copy()
+        disp.columns = ["ספק", "קטגוריה ראשית", "סה\"כ (₪)", "תנועות",
+                        "מס' קטגוריות", "קטגוריות משניות"]
         st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── 2. ספקים לפי קטגוריה (טאבים פנימיים) ──
+    sec("ספקים לפי קטגוריה")
+    cat_groups = project_aggregator.suppliers_by_category(df)
+    if not cat_groups:
+        st.caption("אין נתונים מקוטלגים.")
+    else:
+        # Sort categories by total amount
+        cat_sorted = sorted(cat_groups.items(),
+                              key=lambda kv: -kv[1]["total_amount"].sum())
+        cat_labels = [f"{c} ({int(len(g))})" for c, g in cat_sorted]
+        cat_tabs = st.tabs(cat_labels)
+        for tab, (cat_name, grp) in zip(cat_tabs, cat_sorted):
+            with tab:
+                t_amt = grp["total_amount"].sum()
+                st.caption(f"סה\"כ {cat_name}: ₪{t_amt:,.0f} · {len(grp)} ספקים")
+                show = grp[["supplier", "total_amount", "num_transactions"]].copy()
+                show.columns = ["ספק", "סה\"כ (₪)", "תנועות"]
+                st.dataframe(show, use_container_width=True, hide_index=True)
 
     sec("קבלני משנה - חיובים מחשבשבת")
     subs = _filter_by_keywords(df, KEYWORD_CATEGORIES["subcontractors"])
@@ -1153,8 +1173,9 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
 # ════════════════════════════════════════════════════════════
 
 # ─── כספים → חשבונות חשבשבת ─────────────────────────────────
-def _subtab_accounts_rollup(df: pd.DataFrame) -> None:
-    """ריכוז לפי חשבון: חובה / זכות / יתרה / קטגוריה / האם ממופה."""
+def _subtab_accounts_rollup(df: pd.DataFrame, project_meta: dict | None = None) -> None:
+    """ריכוז לפי חשבון: חובה / זכות / יתרה / קטגוריה / האם ממופה +
+    התאמה מול מאזן הבוחן אם קיים."""
     sec("ריכוז חשבונות חשבשבת")
     chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
     if chash.empty:
@@ -1180,6 +1201,48 @@ def _subtab_accounts_rollup(df: pd.DataFrame) -> None:
                     "יתרה", "תנועות", "קטגוריה", "ממופה"]
     st.dataframe(disp, use_container_width=True, hide_index=True)
     st.caption(f"{len(agg)} חשבונות. {(agg['mapped'] == '✗').sum()} לא ממופים לקטגוריה.")
+
+    # ── התאמת מאזן בוחן מול כרטיס ──
+    if project_meta:
+        from pipeline import load_project_balances
+        from core.balance_loader import reconcile_with_ledger
+        balances = load_project_balances(project_meta["project_id"])
+        if not balances.empty:
+            sec("התאמת מאזן בוחן מול כרטיס הנהלה", meta="לכל חודש בנפרד")
+            months = sorted(balances["month"].dropna().unique())
+            sel_month = st.selectbox("חודש", months, key="bal_recon_month")
+            month_balance = balances[balances["month"] == sel_month][balance_OUTPUT_COLS]
+            # Get ledger for that month (chashbashevet rows in that month)
+            month_ledger = chash[chash["month"] == sel_month] if "month" in chash.columns else chash.iloc[0:0]
+            # Need debit/credit columns - chash rows have them
+            recon = reconcile_with_ledger(month_balance, month_ledger)
+            if recon.empty:
+                st.caption("אין נתונים לחישוב התאמה.")
+            else:
+                ok = int((recon["status"] == "✓ תואם").sum())
+                mismatch = int((recon["status"] != "✓ תואם").sum())
+                c1, c2 = st.columns(2)
+                c1.metric("חשבונות תואמים", str(ok))
+                c2.metric("חשבונות עם הפרש", str(mismatch),
+                            delta=f"-{mismatch}" if mismatch else None,
+                            delta_color="inverse" if mismatch else "normal")
+                show = recon.copy()
+                for c in ("balance_debit", "balance_credit", "ledger_debit",
+                            "ledger_credit", "debit_diff", "credit_diff"):
+                    if c in show.columns:
+                        show[c] = show[c].round(0)
+                show.columns = ["מס' חשבון", "שם חשבון", "מאזן-חובה", "מאזן-זכות",
+                                  "כרטיס-חובה", "כרטיס-זכות",
+                                  "הפרש חובה", "הפרש זכות", "סטטוס"]
+                st.dataframe(show, use_container_width=True, hide_index=True)
+                if mismatch:
+                    ins("amber", "⚠️", f"{mismatch} חשבונות לא תואמים",
+                        "ייתכן בגלל יתרת פתיחה שלא נכללת בכרטיס, או טעות באחד הקבצים.")
+
+
+# constant used inside _subtab_accounts_rollup
+balance_OUTPUT_COLS = ["sort_key", "account_num", "account_name",
+                       "debit", "credit", "balance", "group"]
 
 
 # ─── כספים → גבייה ─────────────────────────────────────────
