@@ -225,15 +225,12 @@ def project_summary(df: pd.DataFrame, project_id: str) -> dict:
     summary["num_transactions"] = int(len(data))
 
     if "amount" in data.columns:
-        # סינון קשיח: revenue = רק מחשבונות הכנסה (927/951/7367 או category=='הכנסות')
-        # זה מונע ספירה בטעות של תיקוני זכות בחשבונות הוצאה כ"הכנסה".
-        from core.chashbashevet_loader import INCOME_ACCOUNTS
+        # סינון מרכזי דרך real_income_mask — מקור אמת יחיד למה נספר
+        # כהכנסה (חיוב ספק / פרויקט), כדי שערכי KPI יהיו זהים בין כל
+        # המסכים (סקירה, רשימת פרויקטים, טאב כספים).
+        from core.chashbashevet_loader import real_income_mask
         chash = data[data["source"] == "chashbashevet"] if "source" in data.columns else data
-        income_mask = (
-            chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
-        )
-        if "category" in chash.columns:
-            income_mask = income_mask | (chash["category"] == "הכנסות")
+        income_mask = real_income_mask(chash)
         income_rows = chash[income_mask]
         expense_rows = chash[~income_mask]
 

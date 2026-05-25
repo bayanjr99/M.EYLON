@@ -344,11 +344,11 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
         st.caption("אין נתונים לפירוט.")
         return
 
-    from core.chashbashevet_loader import INCOME_ACCOUNTS
+    from core.chashbashevet_loader import real_income_mask
     DRILL_OPTIONS = [
         ("— בחר —", None),
-        ("💰 כל ההכנסות", lambda d: d[d["account_num"].isin(INCOME_ACCOUNTS)] if "account_num" in d.columns else d.iloc[0:0]),
-        ("💸 כל ההוצאות", lambda d: d[(d["amount"] > 0) & (~d["account_num"].isin(INCOME_ACCOUNTS))] if "account_num" in d.columns else d.iloc[0:0]),
+        ("💰 כל ההכנסות", lambda d: d[real_income_mask(d)]),
+        ("💸 כל ההוצאות", lambda d: d[(d["amount"] > 0) & (~real_income_mask(d))]),
         ("⛽ סה\"כ דלק ואנרגיה", lambda d: d[d.get("main_category", d.get("category", "")) == "דלק ואנרגיה"]),
         ("👷 סה\"כ שכר עבודה", lambda d: d[d.get("main_category", d.get("category", "")) == "שכר עבודה"]),
         ("🏢 סה\"כ קבלני משנה", lambda d: d[d.get("main_category", d.get("category", "")) == "קבלני משנה"]),
@@ -391,33 +391,16 @@ def _extract_invoice_num(description: str) -> str:
 def _tab_income(df: pd.DataFrame) -> None:
     """הכנסות = רק 'הכנסות פרויקט' ו'הכנסות חיוב ספק'.
 
-    מסנן רק חשבונות הכנסה (927/951/7367 או category=='הכנסות'),
-    ואז משאיר אך ורק שמות חשבון שמכילים 'פרויקט' או 'חיוב ספק'.
-    משתמש ב-match_normalize כדי לסלוח על וריאציות כתיב עברי
-    (לדוגמה: 'פרוייקט' עם יו"ד כפולה → 'פרויקט').
+    משתמש ב-real_income_mask המרכזי — אותה הגדרה בדיוק כמו ב-KPIs
+    של מסך הסקירה ושל רשימת הפרויקטים. כך הסכומים מסונכרנים.
     """
-    from core.chashbashevet_loader import INCOME_ACCOUNTS
-    from utils.hebrew import match_normalize
+    from core.chashbashevet_loader import real_income_mask
     if "source" in df.columns:
         chash = df[df["source"] == "chashbashevet"]
     else:
         chash = df
 
-    # שלב 1: סינון קשיח לחשבונות הכנסה
-    mask_acct = chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
-    mask_cat = (chash["category"] == "הכנסות") if "category" in chash.columns else False
-    income_all = chash[mask_acct | mask_cat]
-
-    # שלב 2: רק 'הכנסות פרויקט' / 'הכנסות מפרויקט' / 'הכנסות חיוב ספק'.
-    # match_normalize מנרמל ניקוד, יו"ד כפול, רווחים — כך ש"פרוייקט"
-    # יזוהה כ"פרויקט".
-    if not income_all.empty and "account_name" in income_all.columns:
-        normalized = income_all["account_name"].fillna("").astype(str) \
-                                                .apply(match_normalize)
-        # אחרי match_normalize: "פרויקט" וגם "פרוייקט" שניהם → "פרויקט"
-        keep = normalized.str.contains("פרויקט", na=False) | \
-               normalized.str.contains("חיוב ספק", na=False)
-        income_all = income_all[keep]
+    income_all = chash[real_income_mask(chash)]
 
     if income_all.empty:
         ins("blue", "ℹ️", "אין הכנסות מתועדות",

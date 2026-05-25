@@ -27,6 +27,62 @@ logger = logging.getLogger(__name__)
 
 INCOME_ACCOUNTS: set[int] = {927, 951, 7367}
 
+# מילות מפתח לזיהוי "הכנסה אמיתית" — תורגם על-ידי match_normalize
+# (יו"ד כפולה מצטמצמת ליו"ד אחת, ניקוד מוסר, וכו').
+# כל חשבון שלא מכיל את אחת המילים האלה נחשב כ"הכנסה אחרת" (לדוגמה
+# "הכנסות זקופות" — הכנסה חשבונאית/מס, לא תזרים אמיתי).
+REAL_INCOME_KEYWORDS: tuple[str, ...] = ("פרויקט", "חיוב ספק")
+
+
+def real_income_mask(chash: "pd.DataFrame") -> "pd.Series":
+    """מסכת בוליאנית על שורות חשבשבת — אילו הן 'הכנסה אמיתית'.
+
+    מקור אמת יחיד למה נספר כהכנסה: שגוי אם משתמשים בו בכמה מקומות
+    עם הגדרות שונות → ייווצרו פערי KPI בין מסכים. כל מקום שמחשב
+    revenue/income חייב להשתמש בפונקציה הזאת.
+
+    הגדרה: שורה נחשבת להכנסה אמיתית אם:
+        1. מספר חשבון ב-INCOME_ACCOUNTS, או category=='הכנסות'.
+        2. שם החשבון מכיל את אחת המילים ב-REAL_INCOME_KEYWORDS
+           (אחרי match_normalize — סובלני לכתיב 'פרוייקט'/'פרויקט').
+
+    Args:
+        chash: DataFrame של שורות חשבשבת (כבר מסונן ל-source='chashbashevet').
+
+    Returns:
+        pd.Series של booleans באותו אינדקס.
+    """
+    import pandas as pd
+    from utils.hebrew import match_normalize
+
+    if chash.empty:
+        return pd.Series([], dtype=bool, index=chash.index)
+
+    # שלב 1: חשבון הכנסה לפי מספר/קטגוריה
+    mask_acct = (
+        chash["account_num"].isin(INCOME_ACCOUNTS)
+        if "account_num" in chash.columns
+        else pd.Series(False, index=chash.index)
+    )
+    mask_cat = (
+        chash["category"] == "הכנסות"
+        if "category" in chash.columns
+        else pd.Series(False, index=chash.index)
+    )
+    candidate = mask_acct | mask_cat
+    if not candidate.any():
+        return candidate
+
+    # שלב 2: סינון לפי שם חשבון (נורמלי — סובל "פרוייקט")
+    if "account_name" not in chash.columns:
+        return candidate
+    normalized = chash["account_name"].fillna("").astype(str).apply(match_normalize)
+    keyword_mask = pd.Series(False, index=chash.index)
+    for kw in REAL_INCOME_KEYWORDS:
+        keyword_mask = keyword_mask | normalized.str.contains(kw, na=False)
+
+    return candidate & keyword_mask
+
 # חשבונות שכר ונלוות - בדרך כלל אין להם "ספק" אמיתי
 # (התיאור הוא "שכ"ע 12/25" וכו'). השמירה: אם התיאור _נראה_ כקוד פנימי
 # (מתחיל ב-שכ"ע / מכיל ##/## בלבד) נדכא; אחרת ניתן ייחוס נורמלי כי

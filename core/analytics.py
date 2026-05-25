@@ -59,16 +59,12 @@ def monthly_trend(df: pd.DataFrame, project_id: str | None = None) -> pd.DataFra
     if data.empty or "month" not in data.columns:
         return pd.DataFrame(columns=cols)
 
-    from core.chashbashevet_loader import INCOME_ACCOUNTS
+    from core.chashbashevet_loader import real_income_mask
     chash = data[data["source"] == "chashbashevet"] if "source" in data.columns else data
     if chash.empty:
         return pd.DataFrame(columns=cols)
 
-    income_mask = (
-        chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
-    )
-    if "category" in chash.columns:
-        income_mask = income_mask | (chash["category"] == "הכנסות")
+    income_mask = real_income_mask(chash)
     chash = chash.assign(
         _is_income=income_mask,
         _income_amount=(-chash["amount"]).where(income_mask, 0),
