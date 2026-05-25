@@ -3,11 +3,16 @@
 API:
     load_projects_registry()       - DataFrame מ-data/projects_registry.xlsx
     make_safe_project_id(name, existing) - מציע project_id באנגלית, ייחודי
-    validate_project_id(pid)       - בודק שהמזהה חוקי (לא תופס, אנגלית, וכו')
+    validate_project_id(pid)       - בודק שהמזהה חוקי
+    validate_project_status(s)     - מאמת ערך סטטוס
     ensure_project_folders(pid)    - יוצר תיקיות בסיס לפרויקט
     create_project(project_data)   - upsert לרגיסטרי + יוצר תיקיות + project_meta.json
+    update_project(pid, updated)   - מעדכן פרטי פרויקט (לא project_id)
+    get_project_by_id(pid)         - dict עם פרטי הפרויקט (registry+meta)
+    load_project_meta(pid)         - dict מתוך project_meta.json
+    save_project_meta(pid, data)   - כותב project_meta.json
 
-עקרון: לא דורסים פרויקט קיים. אם project_id כבר תפוס - שגיאה.
+עקרון: לא דורסים פרויקט קיים בלי כוונה. project_id קבוע לאחר יצירה.
 """
 from __future__ import annotations
 
@@ -32,8 +37,36 @@ PROJECTS_DIR = DATA_ROOT / "projects"
 # תתי-תיקיות ברירת מחדל לכל פרויקט חדש
 DEFAULT_SUB_FOLDERS = ["documents", "uploads", "exports"]
 
-# סטטוסים אפשריים
-VALID_STATUSES = ["active", "paused", "closed"]
+# סטטוסים אפשריים + תרגום לעברית + צבע לתצוגה
+VALID_STATUSES = ["active", "completed", "future", "paused"]
+
+# Legacy aliases — סטטוסים ישנים ממופים לחדשים בטעינה
+STATUS_ALIASES = {
+    "closed": "completed",
+    "on_hold": "paused",
+    "": "active",
+}
+
+STATUS_HE = {
+    "active":    "פעיל",
+    "completed": "הסתיים",
+    "future":    "עתידי",
+    "paused":    "מושהה",
+}
+
+STATUS_COLOR = {
+    "active":    "green",
+    "completed": "gray",
+    "future":    "blue",
+    "paused":    "orange",
+}
+
+
+def validate_project_status(status: str) -> str:
+    """מחזיר סטטוס תקין. ערך לא מוכר → 'active'."""
+    s = (status or "").strip().lower()
+    s = STATUS_ALIASES.get(s, s)
+    return s if s in VALID_STATUSES else "active"
 
 
 # ── טרנסליטרציה עברית → אנגלית ────────────────────────────────
@@ -136,23 +169,26 @@ def validate_project_id(project_id: str) -> tuple[bool, str]:
 
 
 # ── Registry I/O ──────────────────────────────────────────────
+REGISTRY_COLS = ["project_id", "project_name", "site_name", "client_name",
+                 "status", "start_date", "end_date", "notes"]
+
+
 def load_projects_registry() -> pd.DataFrame:
-    """טוען את projects_registry.xlsx. מחזיר DataFrame עם הסכמה הסטנדרטית."""
-    cols = ["project_id", "project_name", "site_name", "client_name",
-            "status", "start_date", "notes"]
+    """טוען את projects_registry.xlsx. מנרמל סטטוס + ממלא עמודות חסרות."""
     if not PROJECTS_REGISTRY.exists():
         logger.warning("projects_registry.xlsx not found at %s", PROJECTS_REGISTRY)
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=REGISTRY_COLS)
     try:
         df = pd.read_excel(PROJECTS_REGISTRY, engine="openpyxl")
-        # ודא שכל העמודות קיימות
-        for c in cols:
+        for c in REGISTRY_COLS:
             if c not in df.columns:
                 df[c] = ""
-        return df[cols]
+        # נרמול סטטוס (closed→completed, on_hold→paused, וכו')
+        df["status"] = df["status"].astype(str).apply(validate_project_status)
+        return df[REGISTRY_COLS]
     except Exception as e:
         logger.exception("Failed to load projects_registry: %s", e)
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=REGISTRY_COLS)
 
 
 def _save_projects_registry(df: pd.DataFrame) -> None:
@@ -173,19 +209,80 @@ def ensure_project_folders(project_id: str) -> Path:
     return pdir
 
 
+def _meta_path(project_id: str) -> Path:
+    return PROJECTS_DIR / project_id / "project_meta.json"
+
+
+def _fmt_date(v) -> str:
+    """ISO date string או '' אם ריק."""
+    if v is None or v == "" or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    if isinstance(v, (datetime, pd.Timestamp)):
+        return pd.to_datetime(v).strftime("%Y-%m-%d")
+    try:
+        return pd.to_datetime(v).strftime("%Y-%m-%d")
+    except Exception:
+        return str(v)
+
+
 def _write_project_meta(project_id: str, data: dict) -> Path:
-    """כותב project_meta.json בתיקיית הפרויקט."""
+    """כותב project_meta.json בתיקיית הפרויקט (משמר created_at קיים)."""
     pdir = ensure_project_folders(project_id)
     meta_path = pdir / "project_meta.json"
+
+    # שמירה על created_at שכבר קיים בקובץ הישן
+    existing = {}
+    if meta_path.exists():
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                existing = json.load(f) or {}
+        except Exception:
+            existing = {}
+
     meta = dict(data)
-    meta.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
+    meta["created_at"] = existing.get("created_at") or datetime.now().isoformat(timespec="seconds")
     meta["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    # פורמט תאריכים לפי ISO
-    if isinstance(meta.get("start_date"), (datetime, pd.Timestamp)):
-        meta["start_date"] = pd.to_datetime(meta["start_date"]).strftime("%Y-%m-%d")
+    meta["start_date"] = _fmt_date(meta.get("start_date"))
+    meta["end_date"] = _fmt_date(meta.get("end_date"))
+
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     return meta_path
+
+
+def save_project_meta(project_id: str, data: dict) -> Path:
+    """API ציבורי לכתיבת project_meta.json."""
+    return _write_project_meta(project_id, data)
+
+
+def load_project_meta(project_id: str) -> dict:
+    """טוען project_meta.json. מחזיר dict ריק אם לא קיים."""
+    p = _meta_path(project_id)
+    if not p.exists():
+        return {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception as e:
+        logger.warning("Failed to load project_meta for %s: %s", project_id, e)
+        return {}
+
+
+def get_project_by_id(project_id: str) -> dict | None:
+    """מחזיר dict עם פרטי הפרויקט (registry + meta). None אם לא קיים."""
+    registry = load_projects_registry()
+    if registry.empty:
+        return None
+    rows = registry[registry["project_id"].astype(str) == project_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0].to_dict()
+    # ממזג meta.json אם יש שדות נוספים שלא ברגיסטרי
+    meta = load_project_meta(project_id)
+    for k, v in meta.items():
+        if k not in row or not row.get(k):
+            row[k] = v
+    return row
 
 
 # ── Create project ────────────────────────────────────────────
@@ -213,9 +310,7 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
         return False, err, ""
 
     # Validate status
-    status = project_data.get("status", "active")
-    if status not in VALID_STATUSES:
-        status = "active"
+    status = validate_project_status(project_data.get("status", "active"))
 
     # Load registry + uniqueness check
     registry = load_projects_registry()
@@ -229,14 +324,10 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
         "site_name": (project_data.get("site_name") or pname).strip(),
         "client_name": (project_data.get("client_name") or "").strip(),
         "status": status,
-        "start_date": project_data.get("start_date") or "",
+        "start_date": _fmt_date(project_data.get("start_date")),
+        "end_date": _fmt_date(project_data.get("end_date")),
         "notes": (project_data.get("notes") or "").strip(),
     }
-
-    # Format start_date
-    sd = new_row["start_date"]
-    if isinstance(sd, (datetime, pd.Timestamp)):
-        new_row["start_date"] = pd.to_datetime(sd).strftime("%Y-%m-%d")
 
     # Append + save xlsx
     new_df = pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
@@ -261,22 +352,73 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
     return True, f"פרויקט '{pname}' נוצר בהצלחה", pid
 
 
-def update_project_meta(project_id: str, updates: dict) -> tuple[bool, str]:
-    """עדכון פרטי פרויקט קיים (לעתיד - כפתור 'ערוך פרטי פרויקט')."""
+def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
+    """עדכון פרטי פרויקט קיים.
+
+    מעדכן את projects_registry.xlsx + project_meta.json.
+    לא מוחק תיקיות, לא מוחק נתונים, לא משנה project_id.
+
+    שדות מותרים: project_name, site_name, client_name, status,
+                  start_date, end_date, notes.
+
+    Returns:
+        (success, message)
+    """
+    pid = (project_id or "").strip()
+    if not pid:
+        return False, "project_id חסר"
+
     registry = load_projects_registry()
-    if registry.empty or project_id not in registry["project_id"].astype(str).values:
-        return False, f"פרויקט '{project_id}' לא קיים"
-    mask = registry["project_id"].astype(str) == project_id
+    if registry.empty or pid not in registry["project_id"].astype(str).values:
+        return False, f"פרויקט '{pid}' לא נמצא ברגיסטרי"
+
+    pname = (updated_data.get("project_name") or "").strip()
+    if "project_name" in updated_data and not pname:
+        return False, "שם פרויקט חובה"
+
+    # נרמול ערכים
     allowed = {"project_name", "site_name", "client_name", "status",
-                "start_date", "notes"}
-    for k, v in updates.items():
-        if k in allowed:
-            registry.loc[mask, k] = v
+               "start_date", "end_date", "notes"}
+    normalized: dict = {}
+    for k, v in updated_data.items():
+        if k not in allowed:
+            continue
+        if k == "status":
+            normalized[k] = validate_project_status(v)
+        elif k in ("start_date", "end_date"):
+            normalized[k] = _fmt_date(v)
+        elif isinstance(v, str):
+            normalized[k] = v.strip()
+        else:
+            normalized[k] = v
+
+    # החלת השינויים על שורת הרגיסטרי
+    mask = registry["project_id"].astype(str) == pid
+    for k, v in normalized.items():
+        registry.loc[mask, k] = v
+
     try:
         _save_projects_registry(registry)
-        # עדכן גם את project_meta.json
-        existing_row = registry[mask].iloc[0].to_dict()
-        _write_project_meta(project_id, existing_row)
-        return True, "עודכן"
+    except PermissionError:
+        return False, ("לא ניתן לכתוב ל-projects_registry.xlsx. "
+                       "סגור את הקובץ ב-Excel ונסה שוב.")
     except Exception as e:
-        return False, f"שגיאה: {e}"
+        logger.exception("Failed to write registry: %s", e)
+        return False, f"שגיאה בכתיבת הרגיסטרי: {e}"
+
+    # עדכון project_meta.json מהשורה החדשה
+    try:
+        row = registry[mask].iloc[0].to_dict()
+        _write_project_meta(pid, row)
+    except Exception as e:
+        logger.exception("Failed to write project_meta.json: %s", e)
+        return False, f"הרגיסטרי עודכן אבל כתיבת project_meta.json נכשלה: {e}"
+
+    logger.info("Updated project %s: %s", pid, list(normalized.keys()))
+    return True, "הפרויקט עודכן בהצלחה"
+
+
+# ── Alias לתאימות לאחור ─────────────────────────────────────
+def update_project_meta(project_id: str, updates: dict) -> tuple[bool, str]:
+    """Alias ישן ל-update_project (תאימות לקוד קיים)."""
+    return update_project(project_id, updates)

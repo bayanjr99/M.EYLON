@@ -8,6 +8,7 @@ import streamlit as st
 
 from core import budget_db
 from ui.components import ins, sec
+from ui.formatters import format_currency, format_percent
 
 
 CONTRACT_TYPES = {
@@ -20,13 +21,8 @@ CONTRACT_TYPE_LABELS = {v: k for k, v in CONTRACT_TYPES.items()}
 
 
 def _fmt_money(v: float) -> str:
-    if v is None:
-        return "—"
-    if abs(v) >= 1_000_000:
-        return f"₪{v/1_000_000:.2f}M"
-    if abs(v) >= 1_000:
-        return f"₪{v/1_000:.0f}K"
-    return f"₪{v:,.0f}"
+    """פורמט מלא: ₪1,250,000."""
+    return format_currency(v)
 
 
 def render_budget_tab(df: pd.DataFrame, project_meta: dict) -> None:
@@ -157,7 +153,7 @@ def render_budget_tab(df: pd.DataFrame, project_meta: dict) -> None:
     disp["actual"] = disp["actual"].apply(_fmt_money)
     disp["variance"] = disp["variance"].apply(_fmt_money)
     disp["util_pct"] = disp["util_pct"].apply(
-        lambda v: f"{v:.1f}%" if pd.notna(v) else "—"
+        lambda v: format_percent(v, already_pct=True) if pd.notna(v) else "—"
     )
     disp.columns = ["קטגוריה", "תקציב", "בפועל", "יתרה", "% ניצול", "סטטוס"]
     st.dataframe(disp, use_container_width=True, hide_index=True)
@@ -172,4 +168,5 @@ def render_budget_tab(df: pd.DataFrame, project_meta: dict) -> None:
     if rev_budget > 0 and rev_actual < rev_budget * 0.8:
         gap = rev_budget - rev_actual
         ins("amber", "📉", "פיגור משמעותי בהכנסות",
-            f"חסרים {_fmt_money(gap)} כדי להגיע ליעד ההכנסות ({rev_actual / rev_budget * 100:.0f}% מהיעד).")
+            f"חסרים {_fmt_money(gap)} כדי להגיע ליעד ההכנסות "
+            f"({format_percent(rev_actual / rev_budget, decimals=0)} מהיעד).")

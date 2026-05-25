@@ -98,8 +98,8 @@ def render_import_page(projects: list[dict]) -> None:
     if not projects:
         empty_state(
             icon="ti-buildings-off",
-            title="אין פרויקטים ברגיסטרי",
-            body_html="צריך לרשום פרויקט ב-<code>data/projects_registry.xlsx</code> לפני ייבוא.",
+            title="אין פרויקטים ברשימת הפרויקטים",
+            body_html="צריך לרשום פרויקט ברשימת הפרויקטים לפני ייבוא.",
         )
         return
 
@@ -107,8 +107,8 @@ def render_import_page(projects: list[dict]) -> None:
     import os
     if os.environ.get("STREAMLIT_SHARING_MODE") or "/mount/src" in os.getcwd():
         ins("amber", "⚠️", "ענן: העלאות לא נשמרות לאורך זמן",
-            "Streamlit Cloud מאתחל את ה-filesystem בכל deploy. להעלאה קבועה - "
-            "הרץ מקומית או דחוף ידנית את ה-master.parquet ל-git.")
+            "בענן מערכת הקבצים מאתחלת בכל פריסה. להעלאה קבועה - "
+            "הרץ מקומית או דחוף ידנית את מאסטר הנתונים למאגר.")
 
     # ── 1. בחירת פרויקט וחודש ──
     sec("בחר פרויקט וחודש")
@@ -123,6 +123,29 @@ def render_import_page(projects: list[dict]) -> None:
         month = st.text_input(
             "חודש (פורמט: MM-YYYY)", key="imp_month",
         ).strip()
+
+    # ── אזהרת סטטוס: פרויקט שהסתיים ──
+    from core.project_store import validate_project_status, STATUS_HE
+    proj_status = validate_project_status(project.get("status"))
+    if proj_status == "completed":
+        confirm_key = f"imp_confirm_completed_{project_id}"
+        if not st.session_state.get(confirm_key):
+            st.warning(
+                f"⚠️ הפרויקט **{pick_name}** מסומן כ-**{STATUS_HE['completed']}**. "
+                "האם אתה בטוח שברצונך לייבא אליו נתונים?"
+            )
+            cc_yes, cc_no = st.columns([1, 4])
+            with cc_yes:
+                if st.button("✅ כן, המשך", key=f"yes_{project_id}",
+                               type="primary", use_container_width=True):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            return
+    elif proj_status == "future":
+        st.info(
+            f"📅 הפרויקט **{pick_name}** מסומן כ-**{STATUS_HE['future']}**. "
+            "ההעלאה תיעשה ידנית רק לאחר בחירתך."
+        )
 
     if not month:
         st.info("הזן חודש לפי הפורמט MM-YYYY כדי להמשיך.")
@@ -199,7 +222,7 @@ def render_import_page(projects: list[dict]) -> None:
     save_label = "💾 שמור קבצים" + (
         f" ({sum(1 for u in uploaded.values() if u)} קבצים)" if any_uploaded else ""
     )
-    rebuild = st.checkbox("הרץ build_master() אחרי השמירה (מומלץ)",
+    rebuild = st.checkbox("בנה מחדש את מאסטר הנתונים אחרי השמירה (מומלץ)",
                           value=True, key="run_build")
 
     if st.button(save_label, type="primary", disabled=not any_uploaded,
@@ -221,9 +244,9 @@ def render_import_page(projects: list[dict]) -> None:
         st.success("נשמר:\n" + "\n".join(f"  • {s}" for s in saved))
 
         if rebuild:
-            with st.spinner("בונה master.parquet מחדש..."):
+            with st.spinner("בונה מאסטר נתונים מחדש..."):
                 master = build_master()
-            st.success(f"master נבנה מחדש: {len(master):,} שורות. רענן את הפרויקט לראות.")
+            st.success(f"מאסטר נבנה מחדש: {len(master):,} שורות. רענן את הפרויקט לראות.")
             # נקה cache של st.cache_data כך שהדשבורד יראה דאטה טריה
             st.cache_data.clear()
         st.rerun()

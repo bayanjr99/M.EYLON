@@ -4,8 +4,12 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from core import analytics, anomaly_detector, project_aggregator
+from core import anomaly_detector, project_aggregator
 from ui.components import empty_state, ins, kpi_block, render_kpi_group, sec
+from ui.formatters import (
+    format_currency, format_number, format_decimal, format_percent,
+    build_column_config,
+)
 
 
 # ── קטגוריזציה לפי מילות מפתח (על account_name או description) ──────
@@ -44,46 +48,70 @@ def _filter_by_keywords(df: pd.DataFrame, keywords: list[str]) -> pd.DataFrame:
 
 
 def _fmt_money(v: float) -> str:
-    if abs(v) >= 1_000_000:
-        return f"₪{v/1_000_000:.2f}M"
-    if abs(v) >= 1_000:
-        return f"₪{v/1_000:.0f}K"
-    return f"₪{v:,.0f}"
+    """Backward-compat alias to format_currency (full ₪1,250,000 format)."""
+    return format_currency(v, blank="₪0")
+
+
+def _clean(v) -> str:
+    """NaN/None/ריק → ''."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
 
 
 def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     """מסך פרויקט: header + 9 טאבים. כל הטאבים מסוננים ל-project_id."""
+    from core.project_store import validate_project_status, STATUS_HE
     project_id = project_meta["project_id"]
-    project_name = project_meta.get("project_name", project_id)
-    client = project_meta.get("client_name") or project_meta.get("notes") or "—"
-    # תרגום סטטוס לעברית להצגה
-    _STATUS_HE = {"active": "פעיל", "paused": "מושהה", "closed": "סגור",
-                  "on_hold": "מושהה", "completed": "הושלם"}
-    status_raw = project_meta.get("status", "active")
-    status = _STATUS_HE.get(str(status_raw).lower(), str(status_raw))
+    project_name = _clean(project_meta.get("project_name")) or project_id
+    client = _clean(project_meta.get("client_name")) or _clean(project_meta.get("notes")) or "—"
+    status_code = validate_project_status(project_meta.get("status", "active"))
+    status = STATUS_HE.get(status_code, status_code)
 
-    # ── Back button + Header ─────────────────────────────────
-    back_col, header_col = st.columns([1, 6])
+    # ── אם נלחץ "ערוך פרויקט" - מציגים טופס במקום הדף ──
+    if st.session_state.get("edit_project_id") == project_id:
+        from ui.pages.projects_list import _render_edit_project_form
+        if st.button("← חזרה לפרויקט", key="back_from_edit",
+                       use_container_width=False):
+            st.session_state.pop("edit_project_id", None)
+            st.rerun()
+        _render_edit_project_form(project_id)
+        return
+
+    # ── Back button + Edit button (שורה אחת מעל הכותרת) ──────
+    back_col, edit_col, _spacer = st.columns([1, 2, 4])
     with back_col:
         if st.button("← חזרה לרשימה", key="back_to_list", use_container_width=True):
             st.session_state.pop("selected_project_id", None)
             st.rerun()
-    with header_col:
-        st.markdown(
-            f"""<div style="display:flex;align-items:center;gap:12px;
-            padding:8px 16px;background:linear-gradient(135deg,#F0FDF4,#FFFFFF);
-            border-radius:10px;border:1px solid var(--brand-primary-mid)">
-              <i class="ti ti-buildings" style="font-size:22px;color:var(--brand-primary)"></i>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:15px;font-weight:800;color:var(--ink-strong);
-                  line-height:1.2">{project_name}</div>
-                <div style="font-size:11px;color:var(--ink-soft);margin-top:2px">
-                  לקוח: <b>{client}</b> · סטטוס: <b>{status}</b> · ID: <code>{project_id}</code>
-                </div>
-              </div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+    with edit_col:
+        if st.button("✏️ ערוך פרויקט", key="edit_project_btn",
+                       use_container_width=True, type="primary"):
+            st.session_state["edit_project_id"] = project_id
+            st.rerun()
+
+    # ── Header card ─────────────────────────────────────────
+    st.markdown(
+        f"""<div style="display:flex;align-items:center;gap:12px;
+        padding:8px 16px;background:linear-gradient(135deg,#F0FDF4,#FFFFFF);
+        border-radius:10px;border:1px solid var(--brand-primary-mid);margin-top:6px">
+          <i class="ti ti-buildings" style="font-size:22px;color:var(--brand-primary)"></i>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:15px;font-weight:800;color:var(--ink-strong);
+              line-height:1.2">{project_name}</div>
+            <div style="font-size:11px;color:var(--ink-soft);margin-top:2px">
+              לקוח: <b>{client}</b> · סטטוס: <b>{status}</b> · מזהה: <code>{project_id}</code>
+            </div>
+          </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     # ── סינון ל-project_id בלבד ──────────────────────────────
     df = df_master[df_master["project_id"] == project_id] if not df_master.empty else df_master
@@ -98,14 +126,14 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         diag = (
             f"<div style='background:#FEF2F2;border:1px solid #FECACA;"
             f"border-radius:8px;padding:10px 14px;margin:10px 0;font-size:11px;"
-            f"font-family:monospace;color:#7F1D1D;direction:ltr;text-align:left'>"
+            f"font-family:monospace;color:#7F1D1D;direction:rtl;text-align:right'>"
             f"<b>אבחון:</b><br>"
-            f"CWD: {os.getcwd()}<br>"
-            f"master.parquet path: {MASTER_PARQUET}<br>"
-            f"exists: {master_exists}, size: {master_size:,} bytes<br>"
-            f"master rows total: {len(df_master):,}<br>"
-            f"project_ids in master: {all_ids}<br>"
-            f"looking for project_id: <b>{project_id!r}</b><br>"
+            f"תיקיית עבודה: {os.getcwd()}<br>"
+            f"נתיב מאסטר: {MASTER_PARQUET}<br>"
+            f"קיים: {'כן' if master_exists else 'לא'}, גודל: {master_size:,} בייטים<br>"
+            f"סה\"כ שורות במאסטר: {len(df_master):,}<br>"
+            f"מזהי פרויקטים במאסטר: {all_ids}<br>"
+            f"מחפש מזהה פרויקט: <b>{project_id!r}</b><br>"
             f"</div>"
         )
         empty_state(
@@ -115,11 +143,10 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                 diag +
                 "כדי לטעון נתונים:"
                 "<ul>"
-                f"<li>שים קבצים ב-<code>data/projects/{project_id}/&lt;MM-YYYY&gt;/</code></li>"
-                "<li>הקבצים: <code>balance.xlsx</code> (מאזן), "
-                "<code>chashbashevet.xlsx</code> (כרטיס הנהלה), "
-                "<code>solar.xlsx</code>, <code>hours.xlsx</code></li>"
-                "<li>הרץ: <code>python -c \"from pipeline import build_master; build_master()\"</code></li>"
+                "<li>שים קבצי חודש בתיקיית הפרויקט</li>"
+                "<li>הקבצים: מאזן, כרטיס הנהלה, "
+                "דוח תדלוקים, דוח שעות עבודה</li>"
+                "<li>בנה מחדש את מאסטר הנתונים</li>"
                 "<li>חזור לרשימה ופתח שוב את הפרויקט</li>"
                 "</ul>"
             ),
@@ -292,41 +319,25 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
     render_kpi_group(kpis_fin, "פיננסי", "ti-cash-banknote")
     render_kpi_group(kpis_ops, "תפעולי", "ti-activity")
 
-    # ── מגמה חודשית: הכנסות מול הוצאות ──
-    sec("מגמה חודשית", meta="הכנסות מול הוצאות")
-    trend = analytics.monthly_trend(df)
-    if trend.empty:
-        st.caption("אין מספיק חודשים להצגת מגמה.")
-    else:
-        disp = trend.copy()
-        disp["רווח %"] = (
-            (disp["total_income"] - disp["total_expenses"]) / disp["total_income"] * 100
-        ).where(disp["total_income"] > 0).round(1)
-        disp = disp[["month", "total_income", "total_expenses", "balance", "רווח %"]]
-        disp.columns = ["חודש", "הכנסות", "הוצאות", "יתרה", "רווח %"]
-        for c in ("הכנסות", "הוצאות", "יתרה"):
-            disp[c] = disp[c].round(0)
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
     # ── Top 10 הוצאות + Top 10 ספקים ──
     chash_exp = df[(df["source"] == "chashbashevet") & (df["amount"] > 0)] \
         if "source" in df.columns else df.iloc[0:0]
     if not chash_exp.empty:
         c1, c2 = st.columns(2)
         with c1:
-            sec("Top 10 הוצאות", meta="לפי קטגוריה")
+            sec("10 הוצאות מובילות", meta="לפי קטגוריה")
             top_cat = chash_exp.groupby("category")["amount"].sum().nlargest(10).round(0).reset_index()
             top_cat.columns = ["קטגוריה", "סה\"כ (₪)"]
             st.dataframe(top_cat, use_container_width=True, hide_index=True)
         with c2:
-            sec("Top 10 ספקים", meta="לפי סכום")
+            sec("10 ספקים מובילים", meta="לפי סכום")
             top_sup = (chash_exp[chash_exp["supplier"].fillna("") != ""]
                         .groupby("supplier")["amount"].sum().nlargest(10).round(0).reset_index())
             top_sup.columns = ["ספק", "סה\"כ (₪)"]
             st.dataframe(top_sup, use_container_width=True, hide_index=True)
 
     # ── Drill-Down: מה מרכיב את הסכומים? ──────────────────────
-    sec("🔍 פירוט מלא לכל מדד (Drill-Down)",
+    sec("🔍 פירוט מלא לכל מדד",
         meta="בחר מדד לראות את התנועות שמרכיבות אותו")
     chash_all = df[df["source"] == "chashbashevet"] if "source" in df.columns else df
     if chash_all.empty:
@@ -378,10 +389,10 @@ def _extract_invoice_num(description: str) -> str:
 
 
 def _tab_income(df: pd.DataFrame) -> None:
-    """הכנסות = רק שורות מחשבונות הכנסה (927/951/7367 או category=='הכנסות').
+    """הכנסות = רק 'הכנסות פרויקט' ו'הכנסות חיוב ספק'.
 
-    מסנן רק מסעיפי הכנסות אמיתיים - לא חשבונות אחרים שיש בתיאור שלהם
-    את המילה 'הכנסות' (כדי לא להכניס בטעות תנועות הוצאה).
+    מסנן רק חשבונות הכנסה (927/951/7367 או category=='הכנסות'),
+    ואז משאיר אך ורק שמות חשבון שמכילים 'פרויקט' או 'חיוב ספק'.
     """
     from core.chashbashevet_loader import INCOME_ACCOUNTS
     if "source" in df.columns:
@@ -389,15 +400,22 @@ def _tab_income(df: pd.DataFrame) -> None:
     else:
         chash = df
 
-    # סינון קשיח: רק חשבונות הכנסה (לפי מספר חשבון או category)
+    # שלב 1: סינון קשיח לחשבונות הכנסה
     mask_acct = chash["account_num"].isin(INCOME_ACCOUNTS) if "account_num" in chash.columns else False
     mask_cat = (chash["category"] == "הכנסות") if "category" in chash.columns else False
     income_all = chash[mask_acct | mask_cat]
 
+    # שלב 2: רק 'הכנסות פרויקט' ו'הכנסות חיוב ספק'
+    if not income_all.empty and "account_name" in income_all.columns:
+        names = income_all["account_name"].fillna("").astype(str)
+        keep = names.str.contains("פרויקט", na=False) | \
+               names.str.contains("חיוב ספק", na=False)
+        income_all = income_all[keep]
+
     if income_all.empty:
         ins("blue", "ℹ️", "אין הכנסות מתועדות",
-            "הכנסות מזוהות אך ורק לפי חשבונות {927, 951, 7367} או category='הכנסות'. "
-            "ודא שהמאזן/כרטיס ההנהלה כולל אותם.")
+            "מוצגות אך ורק 'הכנסות פרויקט' ו'הכנסות חיוב ספק'. "
+            "ודא שהמאזן/כרטיס ההנהלה כולל אותן.")
         return
 
     # סה"כ הכנסות: amount שלילי = הכנסה (אחרי inversion ב-loader)
@@ -452,11 +470,11 @@ def _tab_income(df: pd.DataFrame) -> None:
     st.dataframe(disp, use_container_width=True, hide_index=True)
 
     ins("blue", "ℹ️", "סטטוס גבייה",
-        "סטטוס שולם/פתוח לא מנוטר אוטומטית מחשבשבת. לתצוגה מלאה - "
-        "חבר קובץ <code>collections.xlsx</code> או מערכת CRM.")
+        "סטטוס שולם/פתוח לא מנוטר אוטומטית מכרטיס ההנהלה. לתצוגה מלאה - "
+        "חבר קובץ גבייה ייעודי או מערכת ניהול לקוחות.")
 
     # ── Drill-Down: לפי חשבון / לקוח / חודש ──
-    sec("🔍 Drill-Down - בחר ממד לפירוט")
+    sec("🔍 פירוט - בחר ממד")
     drill_by = st.radio(
         "ממד לפירוט", ["חשבון הכנסה", "לקוח", "חודש"],
         horizontal=True, key="income_drill_dim",
@@ -496,7 +514,7 @@ def _tab_expenses(df: pd.DataFrame) -> None:
     exp_df = exp_df[exp_df["amount"] > 0] if "amount" in exp_df.columns else exp_df
 
     if exp_df.empty:
-        ins("blue", "ℹ️", "אין הוצאות מתועדות", "טען קובץ chashbashevet.xlsx לחודש.")
+        ins("blue", "ℹ️", "אין הוצאות מתועדות", "טען קובץ כרטיס הנהלה לחודש.")
         return
 
     # ── סיכום עליון ──
@@ -582,7 +600,7 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     # ── חלוקה לפי חשבון שכר (כספי) ──
     sec("חלוקה לפי חשבון שכר")
     if salary_df.empty:
-        st.caption("אין נתוני חשבונות שכר ב-chashbashevet.")
+        st.caption("אין נתוני חשבונות שכר בכרטיס ההנהלה.")
     else:
         by_acct = salary_df.groupby("account_name")["amount"].agg(["sum", "count"]).reset_index()
         by_acct.columns = ["חשבון", "סכום", "תנועות"]
@@ -591,9 +609,9 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
                      use_container_width=True, hide_index=True)
 
     # ── רמת עובד בודד (מ-site_tracking) ──
-    sec("עובדים - שעות יומיות", meta="מ-site_tracking.xlsx")
+    sec("עובדים - שעות יומיות", meta="מקובץ יומן שטח")
     if emp_hours.empty:
-        ins("blue", "ℹ️", "אין נתוני שעות עובדים", "הוסף site_tracking.xlsx עם גליון 'שעות עבודה עובדים'.")
+        ins("blue", "ℹ️", "אין נתוני שעות עובדים", "הוסף קובץ יומן שטח עם גליון 'שעות עבודה עובדים'.")
     else:
         per_emp = emp_hours.groupby("name").agg(
             ימי_עבודה=("date", "nunique"),
@@ -615,7 +633,7 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
 
     # ── הזנות ידניות מ-SQLite ──
     if project_meta:
-        sec("הזנות ידניות (control_db)", meta="מטאב 'עדכון נתוני שטח'")
+        sec("הזנות ידניות", meta="מטאב 'עדכון נתוני שטח'")
         from core import control_db
         manual = control_db.list_rows("employee_work_logs", project_meta["project_id"])
         if manual.empty:
@@ -636,7 +654,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
     project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
 
     # ── 1. Top ספקים עם קטגוריה דומיננטית ──
-    sec("Top 30 ספקים - עם קטגוריה אוטומטית")
+    sec("30 ספקים מובילים - עם קטגוריה אוטומטית")
     sup_cat = project_aggregator.suppliers_categorized(df, top_n=30)
     if sup_cat.empty:
         ins("blue", "ℹ️", "אין ספקים מתועדים", "ספקים מחולצים מ-'פרטים' בכרטיס ההנהלה.")
@@ -674,11 +692,11 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
         st.dataframe(subs[cols], use_container_width=True, hide_index=True)
 
     # ── קבלני משנה - שעות תפעוליות מ-site_tracking ──
-    sec("קבלני משנה - שעות עבודה בשטח", meta="מ-site_tracking.xlsx")
+    sec("קבלני משנה - שעות עבודה בשטח", meta="מקובץ יומן שטח")
     site_data = load_site_tracking_data(project_id) if project_id else {}
     sub_hours = site_data.get("subcontractors_hours", pd.DataFrame())
     if sub_hours.empty:
-        st.caption("אין נתוני שעות קבלני משנה ב-site_tracking.")
+        st.caption("אין נתוני שעות קבלני משנה ביומן שטח.")
     else:
         per_sub = sub_hours.groupby("name").agg(
             ימי_עבודה=("date", "nunique"),
@@ -700,7 +718,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
 
     # ── הזנות ידניות מ-SQLite ──
     if project_meta:
-        sec("הזנות ידניות (control_db)")
+        sec("הזנות ידניות")
         from core import control_db
         manual = control_db.list_rows("contractor_work_logs", project_meta["project_id"])
         if manual.empty:
@@ -739,12 +757,12 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("סה\"כ ליטרים", f"{total_liters:,.0f}")
     c2.metric("סה\"כ עלות", _fmt_money(total_cost))
-    c3.metric("₪ / ליטר", f"{avg_price:.2f}" if avg_price else "—")
-    c4.metric("₪ / שעת עבודה", f"{cost_per_hour:,.0f}" if cost_per_hour else "—")
+    c3.metric("₪ / ליטר", format_decimal(avg_price) if avg_price else "—")
+    c4.metric("₪ / שעת עבודה", format_currency(cost_per_hour) if cost_per_hour else "—")
     st.caption(f"{num_fuelings} תדלוקים · {int(total_work_h):,} שעות עבודה")
 
     # ── מאזן מלאי (משלב fuel_inventory.xlsx אם קיים) ──
-    sec("מאזן מלאי סולר", meta="מ-fuel_inventory.xlsx")
+    sec("מאזן מלאי סולר", meta="מקובץ מלאי סולר")
     project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
     inv_combined = _collect_fuel_inventory(project_id) if project_id else pd.DataFrame()
 
@@ -769,7 +787,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
             </div>""",
             unsafe_allow_html=True,
         )
-        st.caption("אין fuel_inventory.xlsx. הוסף קובץ עם עמודות "
+        st.caption("אין קובץ מלאי סולר. הוסף קובץ עם עמודות "
                    "<code>חודש / מלאי פתיחה (ל') / מלאי סגירה (ל')</code> "
                    "כדי לראות מאזן מלאי מלא.")
     else:
@@ -801,7 +819,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
     # ── קניות סולר לפי ספק ──
     sec("קניות סולר לפי ספק")
     if fuel_purchases.empty:
-        st.caption("לא זוהו רכישות סולר ב-chashbashevet (חשבונות עם 'סולר'/'דלק').")
+        st.caption("לא זוהו רכישות סולר בכרטיס ההנהלה (חשבונות עם 'סולר'/'דלק').")
     else:
         by_sup = fuel_purchases.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
         by_sup.columns = ["ספק", "סה\"כ (₪)", "חשבוניות"]
@@ -824,9 +842,9 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── צריכה לפי רכב/כלי ──
-    sec("צריכה לפי כלי", meta="מתוך solar.xlsx")
+    sec("צריכה לפי כלי", meta="מדוח תדלוקים")
     if solar.empty:
-        ins("blue", "ℹ️", "אין נתוני תדלוק", "טען <code>solar.xlsx</code> לחודש.")
+        ins("blue", "ℹ️", "אין נתוני תדלוק", "טען דוח תדלוקים לחודש.")
     else:
         by_tool = solar.groupby(["license_num", "tool_name"])["liters"].agg(
             ["sum", "count"]
@@ -944,7 +962,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
 
     if hours.empty and solar.empty:
         ins("blue", "ℹ️", "אין נתוני כלים",
-            "טען <code>hours.xlsx</code> ו/או <code>solar.xlsx</code> לחודש.")
+            "טען דוח שעות עבודה ו/או דוח תדלוקים לחודש.")
         return
 
     # ── אגרגציה מאוחדת לכל כלי ──
@@ -1045,7 +1063,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
                             "חריגה (ל')", "נזק (₪)", "חומרה"]
             st.dataframe(disp, use_container_width=True, hide_index=True)
     else:
-        st.caption("נדרשים גם solar.xlsx וגם hours.xlsx לזיהוי חריגות סולר.")
+        st.caption("נדרשים גם דוח תדלוקים וגם דוח שעות לזיהוי חריגות סולר.")
 
     # ── טיפולים ─ next service due (מ-site_tracking) ──
     from pipeline import load_site_tracking_data
@@ -1054,7 +1072,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
 
     treatments = site_data.get("treatments", pd.DataFrame())
     if not treatments.empty:
-        sec("מרווחי טיפול וטיפולים הבאים", meta="מ-site_tracking.xlsx")
+        sec("מרווחי טיפול וטיפולים הבאים", meta="מיומן שטח")
         cols = [c for c in ["tool_name", "license_num", "owner",
                             "engine_hours_current", "engine_hours_last_service",
                             "last_service_date", "service_interval",
@@ -1159,7 +1177,29 @@ def _tab_transactions(df: pd.DataFrame) -> None:
         disp = disp[mask]
         st.caption(f"{len(disp):,} תנועות תואמות")
 
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    # תרגום ערכי 'source' לעברית
+    if "source" in disp.columns:
+        disp["source"] = disp["source"].map(_SOURCE_HE).fillna(disp["source"])
+
+    # תרגום כותרות עמודות לעברית
+    disp = _heb_columns(disp, _FULL_TX_COL_HEB)
+    # המרת עמודות סכום ל-numeric כדי שפורמט הפסיקים יחול
+    for c in ("סכום", "סכום (₪)", "חובה", "זכות", "נטו", "נטו (₪)"):
+        if c in disp.columns:
+            disp[c] = pd.to_numeric(disp[c], errors="coerce")
+    st.dataframe(disp, use_container_width=True, hide_index=True,
+                  column_config=build_column_config(disp.columns))
+
+
+_SOURCE_HE = {
+    "chashbashevet": "כרטיס הנהלה",
+    "solar": "תדלוקים",
+    "hours": "שעות עבודה",
+    "manual": "הזנה ידנית",
+    "balance": "מאזן בוחן",
+    "fuel_invoices": "חשבוניות דלק",
+    "site_tracking": "יומן שטח",
+}
 
 
 # ─── עזר: איסוף fuel_inventory לכל חודשי הפרויקט ────────────
@@ -1190,7 +1230,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     project_id = project_meta["project_id"]
 
     # ── חריגות בטיפול (persisted) ──
-    sec("חריגות במעקב", meta="מ-data_quality_issues")
+    sec("חריגות במעקב", meta="מטבלת בעיות איכות נתונים")
     status_filter = st.radio(
         "סטטוס", ["פתוחות", "טופלו", "כל הסטטוסים"],
         horizontal=True, key=f"qa_status_{project_id}",
@@ -1299,10 +1339,10 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         st.caption("אין חודשים בתיקיית הפרויקט.")
 
     # ── 1. תנועות שנפלו לקטגוריות fallback (אחר/הוצאות תפעוליות וכו') ──
-    sec("חשבונות לא מקוטלגים (נפלו ל-fallback)")
+    sec("חשבונות לא מקוטלגים")
     unmapped = categorizer.report_unmapped(chash)
     if unmapped.empty:
-        ins("green", "✓", "כל החשבונות מקוטלגים", "אין שום חשבון בקטגוריית fallback.")
+        ins("green", "✓", "כל החשבונות מקוטלגים", "אין שום חשבון בקטגוריית ברירת מחדל.")
     else:
         st.caption(f"{len(unmapped)} חשבונות. עדכן את category_mapping.xlsx כדי לסווג אותם נכון.")
         st.dataframe(unmapped, use_container_width=True, hide_index=True)
@@ -1680,8 +1720,8 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         st.dataframe(pd.DataFrame([{"מקור התאמה": k, "כמות": v} for k, v in stats.items()]),
                      use_container_width=True, hide_index=True)
 
-    # ── 19. סטטיסטיקת fuel_rules: excel vs fallback ──
-    sec("מקור סיווג דלק: fuel_rules.xlsx vs fallback")
+    # ── 19. סטטיסטיקת מקור סיווג דלק: מקובץ כללים מול ברירת מחדל ──
+    sec("מקור סיווג דלק: קובץ כללים מול ברירת מחדל")
     fuel_rows_all = chash[chash["main_category"] == "דלק ואנרגיה"] \
         if "main_category" in chash.columns else pd.DataFrame()
     if fuel_rows_all.empty:
@@ -1690,19 +1730,19 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         note_col = fuel_rows_all["classification_note"].astype(str)
         excel_count = int(note_col.str.contains("fuel_rules.xlsx").sum())
         fallback_count = int(note_col.str.contains("fallback").sum())
-        manual_count = int(note_col.str.startswith("חשבון 74327").sum())  # legacy hardcoded
+        manual_count = int(note_col.str.startswith("חשבון 74327").sum())
         unknown_count = len(fuel_rows_all) - excel_count - fallback_count - manual_count
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("מ-fuel_rules.xlsx", str(excel_count))
-        c2.metric("מ-fallback hardcoded", str(fallback_count))
-        c3.metric("ישן (legacy)", str(manual_count))
+        c1.metric("מקובץ כללי דלק", str(excel_count))
+        c2.metric("מברירת מחדל", str(fallback_count))
+        c3.metric("ישן", str(manual_count))
         c4.metric("אחר/לא ידוע", str(unknown_count))
         if fallback_count > 0:
-            ins("amber", "⚠️", f"{fallback_count} תנועות סווגו ע\"י fallback hardcoded",
-                "מומלץ להוסיף כללים מתאימים ל-fuel_rules.xlsx")
+            ins("amber", "⚠️", f"{fallback_count} תנועות סווגו ע\"י כלל ברירת מחדל",
+                "מומלץ להוסיף כללים מתאימים לקובץ כללי הדלק")
 
-    # ── 14. ספקים עם סכומים חריגים (top 5 outliers ביחס לחציון) ──
-    sec("ספקים עם סכומים חריגים", meta="חריגות סטטיסטיות (z-score > 3)")
+    # ── 14. ספקים עם סכומים חריגים ──
+    sec("ספקים עם סכומים חריגים", meta="חריגות סטטיסטיות")
     if not expenses.empty:
         sup_sums = expenses[expenses["supplier"].fillna("") != ""].groupby(
             "supplier")["net_amount"].sum()
@@ -1780,10 +1820,10 @@ def _render_tx_detail(tx_df: pd.DataFrame, title: str, key_prefix: str,
     sum_credit = float(tx_df["credit"].sum()) if "credit" in tx_df.columns else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("תנועות", str(n))
-    c2.metric("נטו", f"₪{sum_net:,.0f}")
-    c3.metric("חובה", f"₪{sum_debit:,.0f}")
-    c4.metric("זכות", f"₪{sum_credit:,.0f}")
+    c1.metric("תנועות", format_number(n))
+    c2.metric("נטו", format_currency(sum_net))
+    c3.metric("חובה", format_currency(sum_debit))
+    c4.metric("זכות", format_currency(sum_credit))
 
     show_cols = [c for c in [
         "date", "month", "account_num", "account_name", "supplier", "description",
@@ -1797,7 +1837,8 @@ def _render_tx_detail(tx_df: pd.DataFrame, title: str, key_prefix: str,
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce").round(0)
     disp = _heb_columns(disp, _FULL_TX_COL_HEB)
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    st.dataframe(disp, use_container_width=True, hide_index=True,
+                  column_config=build_column_config(disp.columns))
     _excel_download(disp, sheet_name=title[:31],
                      file_name=f"{file_basename}_{key_prefix}.xlsx",
                      key=f"dl_{key_prefix}")
@@ -1814,7 +1855,7 @@ def _subtab_accounts_rollup(df: pd.DataFrame, project_meta: dict | None = None) 
     sec("ריכוז חשבונות חשבשבת")
     chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
     if chash.empty:
-        ins("blue", "ℹ️", "אין נתוני חשבשבת", "טען כרטיס הנהלה.")
+        ins("blue", "ℹ️", "אין נתוני כרטיס הנהלה", "טען כרטיס הנהלה.")
         return
 
     # Defensive: derive debit/credit from amount if columns are missing
@@ -1937,7 +1978,7 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
     else:
         chash = df
     if chash.empty:
-        ins("blue", "ℹ️", "אין נתוני חשבשבת", "טען כרטיס הנהלה.")
+        ins("blue", "ℹ️", "אין נתוני כרטיס הנהלה", "טען כרטיס הנהלה.")
         return
 
     # אם יש account_type, השתמש; אחרת fallback ל-amount > 0
@@ -2050,7 +2091,7 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("סה\"כ ספקים", str(len(agg)))
-    k2.metric("הוצאות ספקים", f"₪{agg['net'].sum():,.0f}")
+    k2.metric("הוצאות ספקים", format_currency(agg['net'].sum()))
     k3.metric("ספק הכי יקר", str(most_expensive)[:18],
               help=f"₪{agg.iloc[0]['net']:,.0f}" if not agg.empty else "")
     k4.metric("קטגוריה הכי גדולה", str(biggest_cat))
@@ -2061,7 +2102,7 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
             "תנועות הוצאה ללא שם ספק - בדוק בטאב QA → 'ספק לא מזוהה'.")
 
     # ── Top 10 ספקים (טבלה) ──
-    sec("Top 10 ספקים", meta="לפי הוצאה נטו")
+    sec("10 ספקים מובילים", meta="לפי הוצאה נטו")
     top10 = agg.head(10)[["supplier_display", "main_cat", "net", "pct_total", "n_tx"]].copy()
     top10.columns = ["ספק", "קטגוריה ראשית", "סה\"כ נטו (₪)", "% מסך", "תנועות"]
     st.dataframe(top10, use_container_width=True, hide_index=True)
@@ -2100,9 +2141,9 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
         sum_net = float(sup_tx["net_amount"].sum())
         n_months = int(sup_tx["month"].nunique())
         cA, cB, cC, cD = st.columns(4)
-        cA.metric("חובה", f"₪{sum_debit:,.0f}")
-        cB.metric("זכות (זיכויים)", f"₪{sum_credit:,.0f}")
-        cC.metric("נטו", f"₪{sum_net:,.0f}")
+        cA.metric("חובה", format_currency(sum_debit))
+        cB.metric("זכות (זיכויים)", format_currency(sum_credit))
+        cC.metric("נטו", format_currency(sum_net))
         cD.metric("חודשים פעילים", str(n_months))
 
         # טבלת פירוט
@@ -2156,8 +2197,8 @@ def _subtab_collection_status(df: pd.DataFrame) -> None:
     c1, c2, c3 = st.columns(3)
     c1.metric("סה\"כ חשבוניות", str(n_inv))
     c2.metric("סה\"כ סכום", f"₪{total:,.0f}")
-    c3.metric("יתרת לקוח (משוערת)", f"₪{total:,.0f}",
-              help="כל החשבוניות נחשבות פתוחות כי אין שדה payment_status בנתוני המקור")
+    c3.metric("יתרת לקוח (משוערת)", format_currency(total),
+              help="כל החשבוניות נחשבות פתוחות כי אין שדה סטטוס תשלום בנתוני המקור")
 
     cols = [c for c in ["date", "supplier", "description", "amount", "month"]
             if c in income.columns]
@@ -2170,8 +2211,8 @@ def _subtab_collection_status(df: pd.DataFrame) -> None:
     st.dataframe(disp.sort_values("תאריך"), use_container_width=True, hide_index=True)
 
     ins("amber", "ℹ️", "סטטוס גבייה לא מנוטר אוטומטית",
-        "כרטיס ההנהלה לא כולל payment_status. לתצוגה אמיתית של פתוח/שולם - "
-        "הוסף קובץ <code>collections.xlsx</code> או חבר ל-CRM.")
+        "כרטיס ההנהלה לא כולל סטטוס תשלום. לתצוגה אמיתית של פתוח/שולם - "
+        "הוסף קובץ גבייה ייעודי או חבר למערכת ניהול לקוחות.")
 
 
 # ─── תפעול ושטח → יומן אתר ─────────────────────────────────
@@ -2273,7 +2314,7 @@ def _drill_hours_by_entity(combined: pd.DataFrame, entity_col: str,
     """Drill-down כללי לטאב שעות: בחר ישות (כלי/עובד/קבלן/חודש) → פירוט."""
     if combined.empty:
         return
-    sec(f"🔍 Drill-Down לפי {entity_label}")
+    sec(f"🔍 פירוט לפי {entity_label}")
     dim = st.radio(f"ממד לפירוט", [entity_label, "חודש"],
                      horizontal=True, key=f"{key_prefix}_dim")
     if dim == entity_label:
@@ -2341,7 +2382,7 @@ def _render_hours_detail(df: pd.DataFrame, title: str, key_prefix: str) -> None:
 
 def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
     """שעות עבודה כלים - מאחד hours.xlsx + site_tracking + control_db."""
-    sec("שעות עבודה כלים", meta="מאוחד מ-hours.xlsx + site_tracking + הזנה ידנית")
+    sec("שעות עבודה כלים", meta="מאוחד מדוח שעות + יומן שטח + הזנה ידנית")
     project_id = project_meta["project_id"]
 
     hours_master = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
@@ -2353,15 +2394,15 @@ def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
 
     sources = []
     if not hours_master.empty:
-        sources.append(("hours.xlsx", len(hours_master), float(hours_master["work_hours"].sum())))
+        sources.append(("דוח שעות", len(hours_master), float(hours_master["work_hours"].sum())))
     if not site_hours.empty and "work_hours" in site_hours.columns:
-        sources.append(("site_tracking", len(site_hours), float(site_hours["work_hours"].sum())))
+        sources.append(("יומן שטח", len(site_hours), float(site_hours["work_hours"].sum())))
     if not manual.empty and "work_hours" in manual.columns:
         sources.append(("הזנה ידנית", len(manual), float(manual["work_hours"].sum())))
 
     if not sources:
         ins("blue", "ℹ️", "אין נתוני שעות עבודה כלים",
-            "טען <code>hours.xlsx</code> או הוסף שעות בטאב 'יומני שטח'.")
+            "טען דוח שעות עבודה או הוסף שעות בטאב 'יומני שטח'.")
         return
 
     cols_kpi = st.columns(len(sources) + 1)
@@ -2370,7 +2411,7 @@ def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
         cols_kpi[i + 1].metric(f"{src}", f"{h:,.0f} ש'", help=f"{n} שורות")
 
     if not site_hours.empty:
-        sec("מ-site_tracking")
+        sec("מיומן שטח")
         cols = [c for c in ["date", "tool_name", "license_num", "start_time",
                             "end_time", "work_hours", "section", "notes"]
                 if c in site_hours.columns]
@@ -2426,7 +2467,7 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
     sec("קבלני משנה - שעות עבודה בשטח")
     if sub_hours.empty and manual.empty:
         ins("blue", "ℹ️", "אין נתוני קבלני משנה",
-            "טען site_tracking או הוסף שעות בטאב 'יומני שטח'.")
+            "טען יומן שטח או הוסף שעות בטאב 'יומני שטח'.")
         return
 
     if not sub_hours.empty:
@@ -2482,7 +2523,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
     from core.fuel_invoices_loader import summary_by_supplier, summary_by_month
 
     # ── ראש: 5 כרטיסים לפי סוג דלק ──
-    sec("פילוח דלק ואנרגיה לפי סוג", meta="מבוסס על account_type + description")
+    sec("פילוח דלק ואנרגיה לפי סוג", meta="מבוסס על סוג חשבון + תיאור")
     chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
     if "main_category" not in chash.columns:
         # parquet ישן - לא מכיל את השדות החדשים
@@ -2557,12 +2598,12 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                     st.dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── דלק לפי כלי - שילוב מקורות + matching ל-equipment ──
-    sec("דלק לפי כלי", meta="חיבור אוטומטי ל-tools_registry")
+    sec("דלק לפי כלי", meta="חיבור אוטומטי לרשימת הכלים")
     from core.equipment_matcher import enrich_fuel_transactions
     from pipeline import _load_tools_registry, load_fuel_invoices_data
     equipment = _load_tools_registry()
     if equipment.empty:
-        st.caption("אין כלים ב-tools_registry — לא ניתן להתאים.")
+        st.caption("אין כלים ברשימת הכלים — לא ניתן להתאים.")
     else:
         # איסוף כל מקורות הדלק (לאיחוד)
         all_fuel = []
@@ -2684,10 +2725,10 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
             from core.equipment_matcher import unmatched_vehicle_candidates
             candidates = unmatched_vehicle_candidates(enriched)
             if not candidates.empty:
-                sec("רכבים מזוהים בתיאור אבל חסרים ב-tools_registry",
-                    meta="הוסף אותם ב-טאב 'כלים → רשימת כלים' להתאמה אוטומטית")
+                sec("רכבים מזוהים בתיאור אבל חסרים ברשימת הכלים",
+                    meta="הוסף אותם בטאב 'כלים → רשימת כלים' להתאמה אוטומטית")
                 ins("amber", "⚠️", f"זוהו {len(candidates)} רכבים חסרים",
-                    "המערכת חילצה את מספרי הרישוי מהפרטים אך לא מצאה אותם ב-tools_registry. "
+                    "המערכת חילצה את מספרי הרישוי מהפרטים אך לא מצאה אותם ברשימת הכלים. "
                     "הוסף אותם כדי שהדלק יתאים אוטומטית בעתיד.")
                 cand_disp = candidates.copy()
                 # זיהוי סוג דלק לפי הפרטים הראשון
@@ -2800,7 +2841,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                                      use_container_width=True, hide_index=True)
 
     # ── מקור 2 (לשעבר היה ראשי): דוח רכש פריטים - חשבונית-לחשבונית ──
-    sec("חשבוניות סולר ברמת פירוט", meta="מ-fuel_invoices.xlsx (דוח רכש פריטים)")
+    sec("חשבוניות סולר ברמת פירוט", meta="מדוח רכש פריטים")
     inv = load_fuel_invoices_data(project_meta["project_id"])
     if inv.empty:
         ins("blue", "ℹ️", "אין דוח רכש פריטים",
@@ -2812,9 +2853,9 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
         avg_p = total_c / total_l if total_l > 0 else 0
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("חשבוניות", str(len(inv)))
-        c2.metric("ליטרים", f"{total_l:,.0f}")
+        c2.metric("ליטרים", format_number(total_l))
         c3.metric("סה\"כ עלות", f"₪{total_c:,.0f}")
-        c4.metric("₪ ממוצע לליטר", f"{avg_p:.2f}")
+        c4.metric("₪ ממוצע לליטר", format_decimal(avg_p))
 
         # ─ סיכום לפי ספק ─
         with st.expander("לפי ספק", expanded=True):
@@ -2850,7 +2891,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                          use_container_width=True, hide_index=True)
 
     # ── מקור 2: חשבשבת כרטיס (חשבונות סולר) ──
-    sec("חיובי סולר מכרטיס ההנהלה", meta="cross-check עם דוח הרכש")
+    sec("חיובי סולר מכרטיס ההנהלה", meta="בדיקה צולבת עם דוח הרכש")
     fuel_chash = _filter_by_keywords(df, KEYWORD_CATEGORIES["fuel"])
     if "source" in fuel_chash.columns:
         fuel_chash = fuel_chash[fuel_chash["source"] == "chashbashevet"]
@@ -2864,9 +2905,9 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
     total_manual_cost = float(manual["total_cost"].sum()) if not manual.empty and "total_cost" in manual.columns else 0
     total_manual_liters = float(manual["liters"].sum()) if not manual.empty and "liters" in manual.columns else 0
     c1, c2, c3 = st.columns(3)
-    c1.metric("מחשבשבת (₪)", f"₪{total_chash:,.0f}")
-    c2.metric("מהזנה ידנית (ל')", f"{total_manual_liters:,.0f}")
-    c3.metric("מהזנה ידנית (₪)", f"₪{total_manual_cost:,.0f}")
+    c1.metric("מכרטיס הנהלה", format_currency(total_chash))
+    c2.metric("מהזנה ידנית (ל')", format_number(total_manual_liters))
+    c3.metric("מהזנה ידנית", format_currency(total_manual_cost))
 
     if not fuel_chash.empty:
         sec("קניות מחשבשבת")
@@ -2906,7 +2947,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
 
 # ─── סולר וכלים → שימוש בסולר ──────────────────────────────
 def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
-    """שימוש בסולר בפועל - מ-solar.xlsx ומ-site_tracking.fuel."""
+    """שימוש בסולר בפועל - מתדלוקים ומיומן שטח."""
     sec("שימוש בסולר", meta="תדלוקים בפועל לכלים")
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
     from pipeline import load_site_tracking_data
@@ -2915,24 +2956,32 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
     total_solar_l = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0
     total_site_l = float(site_fuel["liters"].sum()) if "liters" in site_fuel.columns and not site_fuel.empty else 0
     c1, c2, c3 = st.columns(3)
-    c1.metric("מ-solar.xlsx (ל')", f"{total_solar_l:,.0f}")
-    c2.metric("מ-site_tracking (ל')", f"{total_site_l:,.0f}")
-    c3.metric("סה\"כ", f"{total_solar_l + total_site_l:,.0f}")
+    c1.metric("מדוח תדלוקים (ל')", format_number(total_solar_l))
+    c2.metric("מיומן שטח (ל')", format_number(total_site_l))
+    c3.metric("סה\"כ", format_number(total_solar_l + total_site_l))
+
+    _FUEL_COL_HEB = {
+        "date": "תאריך", "tool_name": "שם כלי", "license_num": "מס' רישוי",
+        "liters": "ליטרים", "engine_hours": "שעות מנוע",
+        "lph_actual": "ל'/ש' בפועל", "notes": "הערות",
+    }
 
     if not solar.empty:
-        sec("תדלוקים מ-solar.xlsx (Pointer/דלקן)")
+        sec("תדלוקים מדוח תדלוקים")
         cols = [c for c in ["date", "tool_name", "license_num", "liters", "engine_hours"]
                 if c in solar.columns]
-        st.dataframe(solar[cols].sort_values("date" if "date" in cols else cols[0]),
-                     use_container_width=True, hide_index=True)
+        disp = solar[cols].copy().sort_values("date" if "date" in cols else cols[0])
+        disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
 
     if not site_fuel.empty:
-        sec("תדלוקים מ-site_tracking")
+        sec("תדלוקים מיומן שטח")
         cols = [c for c in ["date", "tool_name", "license_num", "liters",
                             "engine_hours", "lph_actual", "notes"]
                 if c in site_fuel.columns]
-        st.dataframe(site_fuel[cols].sort_values("date" if "date" in cols else cols[0]),
-                     use_container_width=True, hide_index=True)
+        disp = site_fuel[cols].copy().sort_values("date" if "date" in cols else cols[0])
+        disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── סולר וכלים → מלאי סולר (Step 4) ───────────────────────
@@ -3088,7 +3137,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     # ── Reconciliation: chashbashevet vs fuel_invoices ──
-    sec("התאמה בין מקורות", meta="chashbashevet ↔ דוח רכש פריטים ↔ יומן שטח")
+    sec("התאמה בין מקורות", meta="כרטיס הנהלה ↔ דוח רכש פריטים ↔ יומן שטח")
     zmh_chash_total = float(fuel_chash[fuel_chash["sub_category"] == "סולר צמ\"ה"]["net_amount"].sum()) \
         if "sub_category" in fuel_chash.columns and not fuel_chash.empty else 0
     inv_book = load_fuel_invoices_data(project_id)
@@ -3141,7 +3190,7 @@ def _subtab_consumption_per_tool(df: pd.DataFrame, project_meta: dict) -> None:
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
     hours = df[df["source"] == "hours"] if "source" in df.columns else df.iloc[0:0]
     if solar.empty or hours.empty:
-        ins("blue", "ℹ️", "נדרשים גם solar.xlsx וגם hours.xlsx", "")
+        ins("blue", "ℹ️", "נדרשים גם דוח תדלוקים וגם דוח שעות", "")
         return
     from core import solar_loader, hours_loader
     from pipeline import _load_tools_registry
@@ -3172,7 +3221,7 @@ def _subtab_maintenance(df: pd.DataFrame, project_meta: dict) -> None:
     if maint.empty:
         st.caption("אין תנועות אחזקה.")
     else:
-        st.metric("סה\"כ אחזקה (₪)", f"₪{float(maint['amount'].sum()):,.0f}")
+        st.metric("סה\"כ אחזקה", format_currency(float(maint['amount'].sum())))
         by_sup = maint.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
         by_sup.columns = ["ספק / מוסך", "סה\"כ (₪)", "תנועות"]
         by_sup["סה\"כ (₪)"] = by_sup["סה\"כ (₪)"].round(0)
@@ -3274,12 +3323,11 @@ def _subtab_import_history(project_meta: dict) -> None:
     from core import storage
     project_id = project_meta["project_id"]
 
-    sec("היסטוריית ייבוא", meta="מ-imported_files (SQLite)")
+    sec("היסטוריית ייבוא", meta="מטבלת קבצים שיובאו")
     files = storage.list_imported_files(project_id)
     if files.empty:
-        ins("blue", "ℹ️", "אין רישומי ייבוא ב-SQLite",
-            "הרץ <code>python -c \"from pipeline import build_master; build_master()\"</code> "
-            "כדי לרשום את הקבצים הקיימים.")
+        ins("blue", "ℹ️", "אין רישומי ייבוא",
+            "בנה מאסטר מחדש כדי לרשום את הקבצים הקיימים.")
     else:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("קבצים", str(len(files)))
@@ -3298,7 +3346,7 @@ def _subtab_import_history(project_meta: dict) -> None:
         st.dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── מחיקת חודש מלא מהמערכת ──
-    sec("מחיקת חודש מהמערכת", meta="מסיר רשומות מ-SQLite (אופציונלית גם קבצים)")
+    sec("מחיקת חודש מהמערכת", meta="מסיר רשומות מבסיס הנתונים (אופציונלית גם קבצים)")
     months = sorted(files["month"].dropna().unique().tolist()) if not files.empty else []
     if not months:
         from pipeline import list_available_months
@@ -3342,23 +3390,23 @@ def _subtab_backup_export(project_meta: dict) -> None:
     from core import storage
     project_id = project_meta["project_id"]
 
-    sec("גיבוי בסיסי הנתונים", meta="data/backups/")
+    sec("גיבוי בסיסי הנתונים", meta="תיקיית גיבויים")
     c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("📥 צור גיבוי מלא עכשיו", key="run_backup",
                        type="primary", use_container_width=True):
             backups = storage.backup_database()
-            st.success(f"נוצרו {len(backups)} קובצי גיבוי ב-data/backups/")
+            st.success(f"נוצרו {len(backups)} קובצי גיבוי בתיקיית הגיבויים")
             for name, path in backups.items():
                 st.caption(f"  • {name} → {path.name}")
             st.rerun()
     with c2:
-        # Direct download of current SQLite
+        # הורדה ישירה של בסיס הנתונים הנוכחי
         if storage.DB_CONTROL.exists():
             with open(storage.DB_CONTROL, "rb") as f:
                 data = f.read()
             st.download_button(
-                f"⬇️ הורד SQLite נוכחי ({len(data) // 1024} KB)",
+                f"⬇️ הורד בסיס נתונים נוכחי ({len(data) // 1024} KB)",
                 data=data,
                 file_name=f"project_control_{datetime.now().strftime('%Y%m%d_%H%M')}.sqlite",
                 mime="application/x-sqlite3",
@@ -3420,7 +3468,7 @@ def _subtab_equipment_full_detail(df: pd.DataFrame, project_meta: dict) -> None:
 
     equipment = _load_tools_registry()
     if equipment.empty:
-        ins("blue", "ℹ️", "אין כלים ב-tools_registry",
+        ins("blue", "ℹ️", "אין כלים ברשימת הכלים",
             "הוסף כלים בטאב 'רשימת כלים'.")
         return
 
@@ -3503,18 +3551,18 @@ def _subtab_equipment_full_detail(df: pd.DataFrame, project_meta: dict) -> None:
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("סה\"כ ליטרים", f"{total_liters:,.0f}")
     k2.metric("סה\"כ שעות עבודה", f"{total_work_hours:,.1f}")
-    k3.metric("עלות אחזקה (₪)", f"₪{total_maint_cost:,.0f}")
-    k4.metric("ל'/ש' בפועל", f"{lph:.1f}" if lph else "—")
+    k3.metric("עלות אחזקה", format_currency(total_maint_cost))
+    k4.metric("ל'/ש' בפועל", format_decimal(lph, decimals=1) if lph else "—")
 
     # ── טיימליין מאוחד ──
     sec("טיימליין פעילות לכלי")
     timeline_rows = []
     for src_df, action, src_label in [
-        (tool_solar, "תדלוק", "solar.xlsx"),
-        (site_solar, "תדלוק", "site_tracking"),
+        (tool_solar, "תדלוק", "דוח תדלוקים"),
+        (site_solar, "תדלוק", "יומן שטח"),
         (manual_fuel, "תדלוק", "ידני"),
-        (tool_hours, "שעות עבודה", "hours.xlsx"),
-        (site_tools, "שעות עבודה", "site_tracking"),
+        (tool_hours, "שעות עבודה", "דוח שעות"),
+        (site_tools, "שעות עבודה", "יומן שטח"),
         (manual_eq, "שעות עבודה", "ידני"),
         (manual_maint, "טיפול/אחזקה", "ידני"),
     ]:
@@ -3578,4 +3626,6 @@ def _label_he(key: str) -> str:
         "materials": "חומרים",
         "rentals": "שכירות ציוד",
         "insurance": "ביטוחים",
+        "other": "אחר",
+        "OTHER": "אחר",
     }.get(key, key)
