@@ -393,8 +393,11 @@ def _tab_income(df: pd.DataFrame) -> None:
 
     מסנן רק חשבונות הכנסה (927/951/7367 או category=='הכנסות'),
     ואז משאיר אך ורק שמות חשבון שמכילים 'פרויקט' או 'חיוב ספק'.
+    משתמש ב-match_normalize כדי לסלוח על וריאציות כתיב עברי
+    (לדוגמה: 'פרוייקט' עם יו"ד כפולה → 'פרויקט').
     """
     from core.chashbashevet_loader import INCOME_ACCOUNTS
+    from utils.hebrew import match_normalize
     if "source" in df.columns:
         chash = df[df["source"] == "chashbashevet"]
     else:
@@ -405,11 +408,15 @@ def _tab_income(df: pd.DataFrame) -> None:
     mask_cat = (chash["category"] == "הכנסות") if "category" in chash.columns else False
     income_all = chash[mask_acct | mask_cat]
 
-    # שלב 2: רק 'הכנסות פרויקט' ו'הכנסות חיוב ספק'
+    # שלב 2: רק 'הכנסות פרויקט' / 'הכנסות מפרויקט' / 'הכנסות חיוב ספק'.
+    # match_normalize מנרמל ניקוד, יו"ד כפול, רווחים — כך ש"פרוייקט"
+    # יזוהה כ"פרויקט".
     if not income_all.empty and "account_name" in income_all.columns:
-        names = income_all["account_name"].fillna("").astype(str)
-        keep = names.str.contains("פרויקט", na=False) | \
-               names.str.contains("חיוב ספק", na=False)
+        normalized = income_all["account_name"].fillna("").astype(str) \
+                                                .apply(match_normalize)
+        # אחרי match_normalize: "פרויקט" וגם "פרוייקט" שניהם → "פרויקט"
+        keep = normalized.str.contains("פרויקט", na=False) | \
+               normalized.str.contains("חיוב ספק", na=False)
         income_all = income_all[keep]
 
     if income_all.empty:
