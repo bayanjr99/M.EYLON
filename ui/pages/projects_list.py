@@ -139,7 +139,8 @@ def _render_edit_project_form(project_id: str) -> None:
     import streamlit as st
     from datetime import date as date_cls
     from core.project_store import (
-        get_project_by_id, update_project, VALID_STATUSES, STATUS_HE,
+        get_project_by_id, update_project,
+        VALID_STATUSES, STATUS_HE, validate_project_status,
     )
 
     proj = get_project_by_id(project_id)
@@ -151,14 +152,26 @@ def _render_edit_project_form(project_id: str) -> None:
         return
 
     def _date_or_none(v):
-        if not v:
+        # None / NaN / NaT / "" / "nan" / "nat" → None
+        if v is None:
             return None
         try:
-            return pd.to_datetime(v).date()
+            if pd.isna(v):
+                return None
+        except (TypeError, ValueError):
+            pass
+        s = str(v).strip()
+        if not s or s.lower() in ("nan", "nat", "none"):
+            return None
+        try:
+            ts = pd.to_datetime(v, errors="coerce")
+            if ts is None or pd.isna(ts):
+                return None
+            return ts.date()
         except Exception:
             return None
 
-    current_status = proj.get("status") or "active"
+    current_status = validate_project_status(proj.get("status"))
     current_status_he = STATUS_HE.get(current_status, "פעיל")
     status_options = [STATUS_HE[s] for s in VALID_STATUSES]
 
@@ -169,11 +182,11 @@ def _render_edit_project_form(project_id: str) -> None:
         c1, c2 = st.columns(2)
         with c1:
             name = st.text_input("שם פרויקט *",
-                                  value=proj.get("project_name") or "")
+                                  value=_clean_text(proj.get("project_name")))
             site = st.text_input("שם אתר",
-                                  value=proj.get("site_name") or "")
+                                  value=_clean_text(proj.get("site_name")))
             client = st.text_input("שם לקוח",
-                                    value=proj.get("client_name") or "")
+                                    value=_clean_text(proj.get("client_name")))
         with c2:
             status_he = st.selectbox(
                 "סטטוס", status_options,
@@ -191,7 +204,7 @@ def _render_edit_project_form(project_id: str) -> None:
                 format="DD/MM/YYYY",
             )
 
-        notes = st.text_area("הערות", value=proj.get("notes") or "")
+        notes = st.text_area("הערות", value=_clean_text(proj.get("notes")))
 
         col_save, col_cancel = st.columns([3, 1])
         with col_save:
