@@ -326,8 +326,9 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
             _tab_transactions(df)
 
     with tabs[2]:
-        # סולר: 4 sub-tabs (עם הזנה ידנית בכל אחד)
-        sub = st.tabs(["קניות סולר", "שימוש בסולר", "סיכום מלאי", "ניתוח"])
+        # סולר: 5 sub-tabs (כולל התאמת דלק חדש)
+        sub = st.tabs(["קניות סולר", "שימוש בסולר", "סיכום מלאי",
+                        "ניתוח", "🔧 התאמת דלק"])
         with sub[0]:
             breadcrumb("סולר", "קניות סולר")
             _subtab_fuel_purchases(df, project_meta)
@@ -346,6 +347,9 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         with sub[3]:
             breadcrumb("סולר", "ניתוח צריכה")
             _subtab_consumption_per_tool(df, project_meta)
+        with sub[4]:
+            breadcrumb("סולר", "התאמת דלק לכלים")
+            _subtab_fuel_matching(df, project_meta)
 
     with tabs[3]:
         # שעות עבודה: 3 sub-tabs (עם הזנה ידנית בכל אחד)
@@ -3635,6 +3639,218 @@ def _subtab_consumption_per_tool(df: pd.DataFrame, project_meta: dict) -> None:
                         "סה\"כ שעות", "ל'/ש' בפועל", "תקן עליון",
                         "חריגה (ל')", "נזק (₪)", "חומרה"]
         display_dataframe(disp, use_container_width=True, hide_index=True)
+
+
+# ─── סולר → התאמת דלק לכלים (item 6) ───────────────────────
+def _subtab_fuel_matching(df: pd.DataFrame, project_meta: dict) -> None:
+    """תת-טאב ייעודי להתאמת תנועות דלק לכלים.
+
+    מחבר את 3 מקורות הדלק (chashbashevet, solar.xlsx, fuel_invoices)
+    דרך core.equipment_matcher + מוסיף UI לשיוך ידני שנשמר ל-JSON
+    בפרויקט.
+    """
+    from core.equipment_matcher import enrich_fuel_transactions
+    from core import fuel_assignments
+    from pipeline import _load_tools_registry, load_fuel_invoices_data
+
+    project_id = project_meta["project_id"]
+    equipment = _load_tools_registry()
+    if equipment.empty:
+        ins("amber", "⚠️", "אין כלים ברשימה",
+            "צריך לפחות כלי אחד ברשימת הכלים כדי לבצע התאמה. "
+            "עבור לטאב '🚜 כלים → רשימת כלים' והשתמש בכפתור "
+            "'הפק רשימה אוטומטית' או הוסף ידנית.")
+        return
+
+    # ── איסוף כל מקורות הדלק ──
+    all_fuel = []
+    solar_rows = df[df["source"] == "solar"] if "source" in df.columns else pd.DataFrame()
+    if not solar_rows.empty:
+        s = solar_rows.copy()
+        s["source_kind"] = "solar"
+        s = s.rename(columns={"liters": "qty_liters"})
+        if "amount" in s.columns:
+            s["total_cost"] = s["amount"]
+        else:
+            s["total_cost"] = 0
+        all_fuel.append(s)
+
+    inv = load_fuel_invoices_data(project_id)
+    if not inv.empty:
+        i = inv.copy()
+        i["source_kind"] = "fuel_invoices"
+        i = i.rename(columns={"item_description": "description",
+                                "liters": "qty_liters"})
+        if "total_cost" not in i.columns:
+            i["total_cost"] = 0
+        all_fuel.append(i)
+
+    # קח חיובי דלק מהכרטיס ההנהלה (74317 / 74327)
+    chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else pd.DataFrame()
+    if not chash.empty and "main_category" in chash.columns:
+        fuel_chash = chash[chash["main_category"] == "דלק ואנרגיה"].copy()
+        if not fuel_chash.empty:
+            fuel_chash["source_kind"] = "chashbashevet"
+            fuel_chash["qty_liters"] = 0  # אין ליטרים בכרטיס
+            fuel_chash["total_cost"] = fuel_chash["amount"]
+            all_fuel.append(fuel_chash)
+
+    if not all_fuel:
+        ins("blue", "ℹ️", "אין נתוני דלק בפרויקט",
+            "טען דוח תדלוקים (solar.xlsx), חשבוניות דלק או תנועות "
+            "דלק מכרטיס ההנהלה.")
+        return
+
+    combined = pd.concat(all_fuel, ignore_index=True, sort=False)
+    # נרמל עמודות חסרות
+    for col in ("description", "license_num", "tool_name", "fuel_type",
+                  "qty_liters", "total_cost", "supplier", "date", "month"):
+        if col not in combined.columns:
+            combined[col] = None
+
+    # ── הרצת ה-matcher ──
+    enriched = enrich_fuel_transactions(
+        combined, equipment,
+        license_col="license_num", tool_name_col="tool_name",
+        description_col="description", fuel_type_col="fuel_type",
+    )
+
+    # ── החלת שיוכים ידניים (override) ──
+    enriched = fuel_assignments.apply_to_enriched(enriched, project_id, equipment)
+
+    # ── KPIs ──
+    n_total = len(enriched)
+    n_matched = int((enriched["matched_by"] != "unmatched").sum())
+    n_manual = int((enriched["_manual_override"] == True).sum())
+    n_high = int((enriched["match_confidence"] == "high").sum())
+    n_unmatched = n_total - n_matched
+    match_pct = (n_matched / n_total * 100) if n_total else 0
+
+    mk1, mk2, mk3, mk4 = st.columns(4)
+    mk1.metric("סה\"כ תנועות דלק", format_number(n_total))
+    mk2.metric("הותאמו", format_number(n_matched),
+                 delta=f"{match_pct:.0f}%")
+    mk3.metric("שיוך ידני", format_number(n_manual))
+    mk4.metric("לא משויכות", format_number(n_unmatched),
+                 delta=f"-{n_unmatched/n_total*100:.0f}%" if n_total else None,
+                 delta_color="inverse")
+
+    # ── verdict ──
+    if n_total == 0:
+        pass
+    elif n_unmatched == 0:
+        ins("green", "✓", "כל תנועות הדלק מותאמות לכלים",
+            "אין פעולה נדרשת.")
+    elif match_pct >= 80:
+        ins("green", "✓", f"כיסוי טוב: {match_pct:.0f}%",
+            f"{n_unmatched} תנועות לא משויכות נשארו לטיפול ידני "
+            "בטבלה למטה.")
+    elif match_pct >= 50:
+        ins("amber", "⚠️", f"כיסוי בינוני: {match_pct:.0f}%",
+            f"{n_unmatched} תנועות דורשות שיוך ידני. "
+            "ייתכן שחסרים כלים ברשימת הכלים.")
+    else:
+        ins("red", "🚨", f"כיסוי נמוך: {match_pct:.0f}%",
+            f"{n_unmatched} מתוך {n_total} תנועות לא הותאמו. "
+            "מומלץ להוסיף כלים חסרים לרשימה לפני המשך הניתוח.")
+
+    # ── תנועות לא משויכות + שיוך ידני ──
+    unmatched = enriched[enriched["matched_by"] == "unmatched"].copy()
+    if not unmatched.empty:
+        sec("תנועות דלק לא משויכות",
+            meta=f"{len(unmatched)} תנועות — שייך ידנית או הוסף כלי חדש")
+
+        # אגרגציה לפי description/supplier — קצר וטוב יותר מאלפי שורות
+        from core.fuel_assignments import row_hash as _rh
+        unmatched["row_hash"] = unmatched.apply(
+            lambda r: _rh(r.get("date"), r.get("supplier"),
+                            r.get("total_cost") or r.get("amount"),
+                            r.get("description")),
+            axis=1,
+        )
+
+        # אם יותר מ-30 שורות לא משויכות — מציג את הגדולות ביותר
+        if len(unmatched) > 30:
+            st.caption(f"מציג 30 תנועות עם הסכום הגבוה ביותר "
+                       f"(מתוך {len(unmatched)} סה\"כ).")
+            unmatched_show = unmatched.nlargest(30, "total_cost", keep="first")
+        else:
+            unmatched_show = unmatched
+
+        # אופציות שיוך
+        tool_options: dict[str, int | None] = {"— בחר כלי —": None}
+        for _, eq in equipment.iterrows():
+            lic = eq.get("license_num")
+            tname = eq.get("tool_name", "")
+            if pd.notna(lic):
+                tool_options[f"{int(lic)} · {tname}"] = int(lic)
+
+        for _, row in unmatched_show.iterrows():
+            h = row["row_hash"]
+            date_str = pd.to_datetime(row.get("date"), errors="coerce")
+            date_str = date_str.strftime("%d/%m/%Y") if pd.notna(date_str) else "—"
+            sup = row.get("supplier") or "—"
+            desc = row.get("description") or ""
+            cost = float(row.get("total_cost") or 0)
+            label = f"📅 {date_str} · 🏪 {sup} · {format_currency(cost)} · {desc[:60]}"
+            with st.expander(label, expanded=False):
+                if desc:
+                    st.caption(f"פרטים מלאים: {desc}")
+                ext = row.get("extracted_license")
+                if pd.notna(ext) and ext:
+                    st.info(f"🔍 חולץ מהפרטים: רישוי **{int(ext)}** — "
+                            "לא נמצא ברשימת הכלים. הוסף אותו כדי לאפשר התאמה אוטומטית.")
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    pick = st.selectbox(
+                        "שייך לכלי",
+                        list(tool_options.keys()),
+                        key=f"fmatch_sel_{h}",
+                    )
+                with c2:
+                    if pick != "— בחר כלי —" and st.button(
+                        "💾 שייך", key=f"fmatch_btn_{h}",
+                        use_container_width=True, type="primary",
+                    ):
+                        fuel_assignments.assign(
+                            project_id, h, tool_options[pick],
+                            notes="שיוך ידני מטאב התאמה",
+                        )
+                        st.success(f"✅ שויך ל-{pick}")
+                        st.cache_data.clear()
+                        st.rerun()
+
+    # ── רכבים שזוהו בתיאור אבל חסרים ברשימת הכלים ──
+    from core.equipment_matcher import unmatched_vehicle_candidates
+    candidates = unmatched_vehicle_candidates(enriched)
+    if not candidates.empty:
+        sec("🆕 רכבים שחולצו מהתיאור אבל חסרים ברשימה",
+            meta=f"{len(candidates)} מספרי רישוי")
+        ins("blue", "💡", "הוסף אותם לרשימת הכלים",
+            "המערכת חילצה את המספרים מהפרטים אך לא מצאה אותם ברשימה. "
+            "עבור לטאב '🚜 כלים → רשימת כלים' והוסף אותם כדי "
+            "שהדלק יתאים אוטומטית בעתיד.")
+        disp = candidates.copy()
+        disp.columns = ["מס' רישוי", "תיאור לדוגמה", "תנועות",
+                        "סה\"כ ₪"]
+        display_dataframe(disp)
+
+    # ── שיוכים ידניים קיימים — לעריכה ──
+    existing = fuel_assignments.list_assignments(project_id)
+    if not existing.empty:
+        sec("📋 שיוכים ידניים שמורים",
+            meta=f"{len(existing)} שיוכים — ניתן לבטל")
+        # החלף license_num לתצוגה של "lic · tool_name"
+        eq_idx = equipment.set_index("license_num", drop=False)
+        existing["כלי"] = existing["license_num"].map(
+            lambda lic: f"{int(lic)} · {eq_idx.loc[lic, 'tool_name']}"
+            if lic in eq_idx.index else f"{int(lic)} (לא ברשימה)"
+        )
+        existing["נוצר"] = pd.to_datetime(existing["assigned_at"],
+                                              errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
+        disp = existing[["row_hash", "כלי", "נוצר", "notes"]].copy()
+        disp.columns = ["מזהה שורה", "כלי", "נוצר", "הערות"]
+        display_dataframe(disp)
 
 
 # ─── סולר וכלים → טיפולים ואחזקה ───────────────────────────
