@@ -127,6 +127,148 @@ def format_hours(value, decimals: int = 1, blank: str = EMPTY) -> str:
     return f"{f:,.{decimals}f} ש'"
 
 
+# ── Date / value cleanup helpers ────────────────────────────
+
+def format_date(value, blank: str = EMPTY) -> str:
+    """Datetime / Timestamp / 'YYYY-MM-DD' / '2026-01-31 00:00:00' → '31/01/2026'."""
+    import pandas as pd
+    if value is None:
+        return blank
+    try:
+        if pd.isna(value):
+            return blank
+    except (TypeError, ValueError):
+        pass
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+        if ts is None or pd.isna(ts):
+            return blank
+        return ts.strftime("%d/%m/%Y")
+    except Exception:
+        return str(value)
+
+
+def format_month(value, blank: str = EMPTY) -> str:
+    """Month label MM-YYYY: handles '2026-01', '01-2026', or datetime → '01-2026'."""
+    import pandas as pd
+    if value is None:
+        return blank
+    try:
+        if pd.isna(value):
+            return blank
+    except (TypeError, ValueError):
+        pass
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "nat", "none"):
+        return blank
+    # Already in MM-YYYY format
+    if len(s) == 7 and s[2] == "-" and s[:2].isdigit() and s[3:].isdigit():
+        return s
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+        if ts is None or pd.isna(ts):
+            return s
+        return ts.strftime("%m-%Y")
+    except Exception:
+        return s
+
+
+def clean_value(value, blank: str = EMPTY) -> str:
+    """ערך תאי תצוגה: None/NaN/'nan'/'' → '—' (או blank שניתן)."""
+    import pandas as pd
+    if value is None:
+        return blank
+    try:
+        if pd.isna(value):
+            return blank
+    except (TypeError, ValueError):
+        pass
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "nat", "none", "null"):
+        return blank
+    return s
+
+
+def clean_dataframe_for_display(df, date_cols=None, month_cols=None,
+                                  blank: str = EMPTY):
+    """מנקה DataFrame לתצוגה: תאריכים → DD/MM/YYYY, NaN → '—'.
+
+    - עמודות שמוחזקות numeric נשארות numeric (פורמט הפסיקים בא דרך column_config).
+    - עמודות אובייקט/מחרוזת עם NaN/None מקבלות placeholder.
+    - עמודות בשם 'תאריך' / 'date' מקבלות פורמט DD/MM/YYYY.
+    - עמודות בשם 'חודש' / 'month' / 'month_label' מקבלות פורמט MM-YYYY.
+
+    Args:
+        df: DataFrame להצגה.
+        date_cols: רשימת שמות עמודות לפורמט תאריך (אוטו אם None).
+        month_cols: רשימת שמות עמודות חודש (אוטו אם None).
+        blank: ערך placeholder ל-NaN/ריק.
+
+    Returns:
+        DataFrame חדש מוכן לתצוגה (לא משנה את המקורי).
+    """
+    import pandas as pd
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    # זיהוי אוטומטי של עמודות תאריך/חודש לפי שם
+    if date_cols is None:
+        date_cols = [c for c in out.columns
+                      if str(c).strip() in ("תאריך", "date", "תאריך אסמכתא",
+                                              "תאריך ערך", "תאריך התחלה",
+                                              "תאריך סיום", "תאריך טיפול",
+                                              "תאריך ייבוא")]
+    if month_cols is None:
+        month_cols = [c for c in out.columns
+                       if str(c).strip() in ("חודש", "month", "month_label")]
+
+    # פורמט תאריכים
+    for c in date_cols:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda v: format_date(v, blank=blank))
+
+    # פורמט חודש
+    for c in month_cols:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda v: format_month(v, blank=blank))
+
+    # נקה NaN/None בעמודות לא-numeric
+    for c in out.columns:
+        if c in date_cols or c in month_cols:
+            continue
+        # עמודה numeric → נשאיר כפי שהיא (column_config יטפל)
+        if pd.api.types.is_numeric_dtype(out[c]):
+            continue
+        # עמודת object/string — נחליף NaN ל-blank
+        out[c] = out[c].apply(lambda v: clean_value(v, blank=blank))
+
+    return out
+
+
+def display_dataframe(df, **kwargs):
+    """st.dataframe wrapper שמחיל קלינ-אפ + column_config אוטומטית.
+
+    שימוש:
+        from ui.formatters import display_dataframe
+        display_dataframe(df, use_container_width=True, hide_index=True)
+
+    מה הוא עושה:
+        1. clean_dataframe_for_display → תאריכים נקיים, NaN → '—'
+        2. column_config מ-COMMON_NUMBER_FORMATS → מספרים עם פסיקים
+
+    Args שעוברים כמו שהם ל-st.dataframe.
+    """
+    import streamlit as st
+    cleaned = clean_dataframe_for_display(df)
+    kwargs.setdefault("use_container_width", True)
+    kwargs.setdefault("hide_index", True)
+    if "column_config" not in kwargs and cleaned is not None and not cleaned.empty:
+        kwargs["column_config"] = build_column_config(cleaned.columns)
+    return st.dataframe(cleaned, **kwargs)
+
+
 # ── Streamlit column_config helpers ─────────────────────────
 
 # מילון מרכזי של פורמטים לעמודות נפוצות (לפי שם עמודה בעברית).

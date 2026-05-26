@@ -12,6 +12,7 @@ import streamlit as st
 
 from core import control_db
 from ui.components import ins, sec
+from ui.formatters import display_dataframe
 
 
 # ── Column config helpers ─────────────────────────────────────
@@ -166,6 +167,75 @@ def render_field_data_entry(project_meta: dict) -> None:
 
 
 # ── Tools management sub-tab ─────────────────────────────────
+def _auto_derive_tools_from_data() -> pd.DataFrame:
+    """סורק את כל הנתונים הקיימים (master + fuel_invoices) ומחזיר
+    DataFrame של כלים שראינו אבל לא נמצאים ב-tools registry.
+
+    מקורות: solar, hours, fuel_invoices.
+    מחזיר: DataFrame עם license_num (int), tool_name (str), n_seen (int).
+    """
+    from pipeline import load_master, load_fuel_invoices_data
+
+    candidates: dict[int, dict] = {}
+
+    def _add(license_num, tool_name, source):
+        try:
+            lic = int(license_num)
+        except (TypeError, ValueError):
+            return
+        if lic <= 0:
+            return
+        name = str(tool_name or "").strip() if tool_name and not pd.isna(tool_name) else ""
+        if lic not in candidates:
+            candidates[lic] = {"license_num": lic, "tool_name": name,
+                                "sources": set(), "n_seen": 0}
+        candidates[lic]["sources"].add(source)
+        candidates[lic]["n_seen"] += 1
+        # שמור על השם הראשון שמצאנו (לא ריק)
+        if not candidates[lic]["tool_name"] and name:
+            candidates[lic]["tool_name"] = name
+
+    # מאסטר: solar + hours
+    try:
+        master = load_master()
+        if not master.empty and "license_num" in master.columns:
+            for src_name in ("solar", "hours"):
+                rows = master[master["source"] == src_name] if "source" in master.columns else pd.DataFrame()
+                if rows.empty:
+                    continue
+                for _, r in rows[["license_num", "tool_name"]].dropna(subset=["license_num"]).drop_duplicates().iterrows():
+                    _add(r.get("license_num"), r.get("tool_name"), src_name)
+    except Exception:
+        pass
+
+    # fuel_invoices
+    try:
+        inv = load_fuel_invoices_data()
+        if not inv.empty:
+            for col in ("license_num", "license", "vehicle_license"):
+                if col in inv.columns:
+                    for _, r in inv[[col]].dropna().drop_duplicates().iterrows():
+                        _add(r[col], "", "fuel_invoices")
+                    break
+    except Exception:
+        pass
+
+    if not candidates:
+        return pd.DataFrame(columns=["license_num", "tool_name", "n_seen", "sources"])
+
+    out = pd.DataFrame(list(candidates.values()))
+    out["sources"] = out["sources"].apply(lambda s: ", ".join(sorted(s)))
+    out = out.sort_values("n_seen", ascending=False).reset_index(drop=True)
+
+    # סנן כלים שכבר ב-control_db
+    existing = control_db.list_tools()
+    if not existing.empty and "license_num" in existing.columns:
+        existing_lics = set(existing["license_num"].dropna().astype(int).tolist())
+        out = out[~out["license_num"].isin(existing_lics)]
+
+    return out
+
+
 def _render_tools_management() -> None:
     """ניהול רשימת כלים: הוספה / מחיקה / עדכון. Fleet-wide."""
     ins("blue", "🔩", "ניהול רשימת כלים",
@@ -176,7 +246,43 @@ def _render_tools_management() -> None:
     sec("רשימת כלים", meta="לחץ Delete על שורה למחיקה")
     tools = control_db.list_tools()
     if tools.empty:
-        st.caption("אין כלים שהוזנו ידנית. השתמש בטופס 'הוסף כלי חדש' למטה.")
+        st.caption("אין כלים שהוזנו ידנית. השתמש בטופס 'הוסף כלי חדש' למטה, "
+                   "או הפק רשימה אוטומטית מהנתונים הקיימים.")
+
+        # ── הפקה אוטומטית מהנתונים ──
+        auto = _auto_derive_tools_from_data()
+        if not auto.empty:
+            sec("🔍 כלים שזוהו בנתונים", meta=f"{len(auto)} כלים אפשריים")
+            preview = auto.copy()
+            preview.columns = ["מס' רישוי", "שם / דגם", "מספר הופעות", "מקורות"]
+            display_dataframe(preview)
+            if st.button(f"➕ הוסף את כל {len(auto)} הכלים לרשימה",
+                           type="primary", use_container_width=True,
+                           key="auto_add_tools"):
+                added = 0
+                errors = 0
+                for _, r in auto.iterrows():
+                    ok, _ = control_db.add_tool(
+                        license_num=int(r["license_num"]),
+                        tool_name=str(r["tool_name"] or "כלי לא ידוע"),
+                        tool_type="",
+                        owner="",
+                        norm_low=None,
+                        norm_high=None,
+                        notes=f"נוצר אוטומטית ממקורות: {r['sources']}",
+                        internal_num="",
+                    )
+                    if ok:
+                        added += 1
+                    else:
+                        errors += 1
+                if added:
+                    st.success(f"✅ נוספו {added} כלים. ערוך כל כלי כדי "
+                                "להוסיף סוג, תקן עליון/תחתון, וכו'.")
+                if errors:
+                    st.warning(f"⚠️ {errors} כלים לא נוספו (אולי קיימים כבר).")
+                st.cache_data.clear()
+                st.rerun()
     else:
         # סיכום קצר לפי קבוצה
         if "equipment_group" in tools.columns:
@@ -184,7 +290,7 @@ def _render_tools_management() -> None:
             grp_summary.columns = ["קבוצת כלי", "כמות"]
             cA, cB = st.columns([2, 3])
             with cA:
-                st.dataframe(grp_summary, use_container_width=True, hide_index=True)
+                display_dataframe(grp_summary, use_container_width=True, hide_index=True)
             with cB:
                 st.caption(f"סה\"כ {len(tools)} כלים במערכת. כלים נוספים מקובץ רשימת הכלים מוצגים למטה.")
 
@@ -200,7 +306,7 @@ def _render_tools_management() -> None:
                "owner": "בעלים שם", "norm_low": "תקן ת'", "norm_high": "תקן ע'",
                "notes": "הערות"}
         disp.columns = [heb.get(c, c) for c in show_cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
         # Delete by license_num
         c_d1, c_d2 = st.columns([1, 3])
@@ -242,7 +348,7 @@ def _render_tools_management() -> None:
             }
             disp_xlsx = xlsx_only[cols].copy()
             disp_xlsx.columns = [heb_xlsx.get(c, c) for c in cols]
-            st.dataframe(disp_xlsx, use_container_width=True, hide_index=True)
+            display_dataframe(disp_xlsx, use_container_width=True, hide_index=True)
 
     # ── טופס הוספה (מתחת לרשימה) ──
     with st.expander("➕ הוסף כלי חדש", expanded=tools.empty):

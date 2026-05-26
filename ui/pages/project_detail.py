@@ -5,10 +5,12 @@ import pandas as pd
 import streamlit as st
 
 from core import anomaly_detector, project_aggregator
-from ui.components import empty_state, ins, kpi_block, render_kpi_group, sec
+from ui.components import (
+    breadcrumb, empty_state, ins, kpi_block, render_kpi_group, sec,
+)
 from ui.formatters import (
     format_currency, format_number, format_decimal, format_percent,
-    build_column_config,
+    build_column_config, display_dataframe,
 )
 
 
@@ -219,24 +221,30 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     ])
 
     with tabs[0]:
+        breadcrumb("פרויקט", project_name, "סקירה כללית")
         _tab_overview(df, summary)
 
     with tabs[1]:
         # כספים: 4 sub-tabs
         sub = st.tabs(["הכנסות", "הוצאות", "ספקים", "פירוט תנועות"])
         with sub[0]:
+            breadcrumb("כספים", "הכנסות")
             _tab_income(df)
         with sub[1]:
+            breadcrumb("כספים", "הוצאות")
             _tab_expenses(df)
         with sub[2]:
+            breadcrumb("כספים", "ספקים")
             _subtab_suppliers_finance(df, project_meta)
         with sub[3]:
+            breadcrumb("כספים", "פירוט תנועות")
             _tab_transactions(df)
 
     with tabs[2]:
         # סולר: 4 sub-tabs (עם הזנה ידנית בכל אחד)
         sub = st.tabs(["קניות סולר", "שימוש בסולר", "סיכום מלאי", "ניתוח"])
         with sub[0]:
+            breadcrumb("סולר", "קניות סולר")
             _subtab_fuel_purchases(df, project_meta)
             with st.expander("➕ הזנה ידנית של קניות סולר"):
                 from ui.pages.field_data_entry import (
@@ -245,26 +253,32 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                 _render_fuel_quick_form(project_id)
                 _render_sub_tab("fuel_logs", project_id, None, None)
         with sub[1]:
+            breadcrumb("סולר", "שימוש בסולר")
             _subtab_fuel_usage(df, project_meta)
         with sub[2]:
+            breadcrumb("סולר", "סיכום מלאי")
             _subtab_fuel_inventory(df, project_meta)
         with sub[3]:
+            breadcrumb("סולר", "ניתוח צריכה")
             _subtab_consumption_per_tool(df, project_meta)
 
     with tabs[3]:
         # שעות עבודה: 3 sub-tabs (עם הזנה ידנית בכל אחד)
         sub = st.tabs(["שעות עבודה כלים", "שעות עובדים", "שעות קבלני משנה"])
         with sub[0]:
+            breadcrumb("שעות עבודה", "כלים")
             _subtab_equipment_hours(df, project_meta)
             with st.expander("➕ הזנה ידנית של שעות עבודה כלים"):
                 from ui.pages.field_data_entry import _render_sub_tab
                 _render_sub_tab("equipment_work_logs", project_id, None, None)
         with sub[1]:
+            breadcrumb("שעות עבודה", "עובדים")
             _tab_employees(df, project_meta)
             with st.expander("➕ הזנה ידנית של שעות עובדים"):
                 from ui.pages.field_data_entry import _render_sub_tab
                 _render_sub_tab("employee_work_logs", project_id, None, None)
         with sub[2]:
+            breadcrumb("שעות עבודה", "קבלני משנה")
             _subtab_contractors_field(df, project_meta)
             with st.expander("➕ הזנה ידנית של שעות קבלני משנה"):
                 from ui.pages.field_data_entry import _render_sub_tab
@@ -275,16 +289,20 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         sub = st.tabs(["רשימת כלים", "פעילות כלים", "עלויות כלי",
                         "ניתוח כלי", "🔍 כרטיס כלי מלא"])
         with sub[0]:
+            breadcrumb("כלים", "רשימת כלים")
             from ui.pages.field_data_entry import _render_tools_management
             _render_tools_management()
         with sub[1]:
+            breadcrumb("כלים", "פעילות כלים")
             _tab_vehicles_tools(df, project_meta)
         with sub[2]:
+            breadcrumb("כלים", "עלויות כלי")
             _subtab_maintenance(df, project_meta)
             with st.expander("➕ הזנה ידנית של טיפולים ואחזקה"):
                 from ui.pages.field_data_entry import _render_sub_tab
                 _render_sub_tab("maintenance_logs", project_id, None, None)
         with sub[3]:
+            breadcrumb("כלים", "ניתוח כלי")
             _subtab_cost_per_hour(df, project_meta)
         with sub[4]:
             _subtab_equipment_full_detail(df, project_meta)
@@ -328,13 +346,13 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
             sec("10 הוצאות מובילות", meta="לפי קטגוריה")
             top_cat = chash_exp.groupby("category")["amount"].sum().nlargest(10).round(0).reset_index()
             top_cat.columns = ["קטגוריה", "סה\"כ (₪)"]
-            st.dataframe(top_cat, use_container_width=True, hide_index=True)
+            display_dataframe(top_cat, use_container_width=True, hide_index=True)
         with c2:
             sec("10 ספקים מובילים", meta="לפי סכום")
             top_sup = (chash_exp[chash_exp["supplier"].fillna("") != ""]
                         .groupby("supplier")["amount"].sum().nlargest(10).round(0).reset_index())
             top_sup.columns = ["ספק", "סה\"כ (₪)"]
-            st.dataframe(top_sup, use_container_width=True, hide_index=True)
+            display_dataframe(top_sup, use_container_width=True, hide_index=True)
 
     # ── Drill-Down: מה מרכיב את הסכומים? ──────────────────────
     sec("🔍 פירוט מלא לכל מדד",
@@ -425,7 +443,7 @@ def _tab_income(df: pd.DataFrame) -> None:
         monthly = income_all.groupby("month")["amount"].sum().abs().reset_index()
         monthly.columns = ["חודש", "סכום"]
         monthly["סכום"] = monthly["סכום"].round(0)
-        st.dataframe(monthly, use_container_width=True, hide_index=True)
+        display_dataframe(monthly, use_container_width=True, hide_index=True)
 
     # ── טבלת חשבוניות עם date/customer/invoice#/amount/status ──
     sec("פירוט חשבוניות מכירה")
@@ -457,7 +475,7 @@ def _tab_income(df: pd.DataFrame) -> None:
         disp["amount_abs"] = disp["amount_abs"].round(0)
     disp = disp.sort_values("date" if "date" in show_cols else show_cols[0])
     disp.columns = [rename_map[c] for c in show_cols]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    display_dataframe(disp, use_container_width=True, hide_index=True)
 
     ins("blue", "ℹ️", "סטטוס גבייה",
         "סטטוס שולם/פתוח לא מנוטר אוטומטית מכרטיס ההנהלה. לתצוגה מלאה - "
@@ -540,7 +558,7 @@ def _tab_expenses(df: pd.DataFrame) -> None:
         })
     summary_rows.sort(key=lambda r: -r["סכום (₪)"])
     summary_df = pd.DataFrame(summary_rows).drop(columns=["_key"])
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    display_dataframe(summary_df, use_container_width=True, hide_index=True)
 
     # ── Drill-down: expander לכל קטגוריה ──
     sec("פירוט תנועות לכל קטגוריה", meta="לחץ על קטגוריה לפתיחה")
@@ -562,7 +580,7 @@ def _tab_expenses(df: pd.DataFrame) -> None:
                 "debit": "חובה", "credit": "זכות", "amount": "סכום", "month": "חודש",
             }
             disp.columns = [heb_names.get(c, c) for c in disp.columns]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── Tab 4: עובדים ושכר (עם site_tracking) ──────────────────
@@ -595,7 +613,7 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
         by_acct = salary_df.groupby("account_name")["amount"].agg(["sum", "count"]).reset_index()
         by_acct.columns = ["חשבון", "סכום", "תנועות"]
         by_acct["סכום"] = by_acct["סכום"].round(0)
-        st.dataframe(by_acct.sort_values("סכום", ascending=False),
+        display_dataframe(by_acct.sort_values("סכום", ascending=False),
                      use_container_width=True, hide_index=True)
 
     # ── רמת עובד בודד (מ-site_tracking) ──
@@ -609,7 +627,7 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
         ).reset_index().sort_values("סה_כ_שעות", ascending=False)
         per_emp["סה_כ_שעות"] = per_emp["סה_כ_שעות"].round(1)
         per_emp.columns = ["שם עובד", "ימי עבודה", "סה\"כ שעות"]
-        st.dataframe(per_emp, use_container_width=True, hide_index=True)
+        display_dataframe(per_emp, use_container_width=True, hide_index=True)
 
         # Drill-down per employee
         with st.expander("פירוט יומי לכל עובד"):
@@ -619,7 +637,7 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
                    "end_time": "סיום", "work_hours": "שעות", "notes": "הערות"}
             disp = emp_hours[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── הזנות ידניות מ-SQLite ──
     if project_meta:
@@ -635,7 +653,7 @@ def _tab_employees(df: pd.DataFrame, project_meta: dict | None = None) -> None:
                 ימים=("days", "sum"),
             ).reset_index().round(1)
             agg.columns = ["שם עובד", "ימי עבודה", "סה\"כ שעות", "סה\"כ ימים"]
-            st.dataframe(agg, use_container_width=True, hide_index=True)
+            display_dataframe(agg, use_container_width=True, hide_index=True)
 
 
 # ─── Tab 5: ספקים וקבלנים (עם site_tracking + סיווג) ───────
@@ -652,7 +670,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
         disp = sup_cat.copy()
         disp.columns = ["ספק", "קטגוריה ראשית", "סה\"כ (₪)", "תנועות",
                         "מס' קטגוריות", "קטגוריות משניות"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── 2. ספקים לפי קטגוריה (טאבים פנימיים) ──
     sec("ספקים לפי קטגוריה")
@@ -671,7 +689,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
                 st.caption(f"סה\"כ {cat_name}: ₪{t_amt:,.0f} · {len(grp)} ספקים")
                 show = grp[["supplier", "total_amount", "num_transactions"]].copy()
                 show.columns = ["ספק", "סה\"כ (₪)", "תנועות"]
-                st.dataframe(show, use_container_width=True, hide_index=True)
+                display_dataframe(show, use_container_width=True, hide_index=True)
 
     sec("קבלני משנה - חיובים מחשבשבת")
     subs = _filter_by_keywords(df, KEYWORD_CATEGORIES["subcontractors"])
@@ -679,7 +697,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
         st.caption("לא זוהו תנועות תחת 'קבלני משנה'.")
     else:
         cols = [c for c in ["date", "supplier", "description", "amount"] if c in subs.columns]
-        st.dataframe(subs[cols], use_container_width=True, hide_index=True)
+        display_dataframe(subs[cols], use_container_width=True, hide_index=True)
 
     # ── קבלני משנה - שעות תפעוליות מ-site_tracking ──
     sec("קבלני משנה - שעות עבודה בשטח", meta="מקובץ יומן שטח")
@@ -694,7 +712,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
         ).reset_index().sort_values("סה_כ_שעות", ascending=False)
         per_sub["סה_כ_שעות"] = per_sub["סה_כ_שעות"].round(1)
         per_sub.columns = ["שם קבלן/משאית", "ימי עבודה", "סה\"כ שעות"]
-        st.dataframe(per_sub, use_container_width=True, hide_index=True)
+        display_dataframe(per_sub, use_container_width=True, hide_index=True)
 
         with st.expander("פירוט יומי לקבלני משנה"):
             cols = [c for c in ["date", "name", "license_num", "start_time",
@@ -704,7 +722,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
                    "work_hours": "שעות", "notes": "הערות"}
             disp = sub_hours[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── הזנות ידניות מ-SQLite ──
     if project_meta:
@@ -722,7 +740,7 @@ def _tab_suppliers(df: pd.DataFrame, project_meta: dict | None = None) -> None:
                    "price": "מחיר (₪)", "invoice_num": "מס' חשבונית", "notes": "הערות"}
             disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── Tab 6: סולר ואחזקה (מודול מלא) ─────────────────────────
@@ -800,7 +818,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
             disp.columns = ["חודש", "פתיחה (ל')", "קניות (ל')", "שימושים (ל')",
                             "סגירה צפויה (ל')", "סגירה בפועל (ל')",
                             "הפרש (ל')", "סטטוס"]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
             n_bad = int((balance["status"] == "חוסר").sum())
             if n_bad:
                 ins("amber", "⚠️", f"{n_bad} חודשים עם חוסר במלאי",
@@ -814,7 +832,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
         by_sup = fuel_purchases.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
         by_sup.columns = ["ספק", "סה\"כ (₪)", "חשבוניות"]
         by_sup["סה\"כ (₪)"] = by_sup["סה\"כ (₪)"].round(0)
-        st.dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
+        display_dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
                      use_container_width=True, hide_index=True)
 
         with st.expander("פירוט חשבוניות סולר"):
@@ -829,7 +847,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
             disp.columns = [heb.get(c, c) for c in cols]
             if "סכום (₪)" in disp.columns:
                 disp["סכום (₪)"] = disp["סכום (₪)"].round(0)
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── צריכה לפי רכב/כלי ──
     sec("צריכה לפי כלי", meta="מדוח תדלוקים")
@@ -845,14 +863,14 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
         # הוסף עלות משוערת (משערך לפי avg_price)
         if avg_price > 0:
             by_tool["עלות משוערת (₪)"] = (by_tool["סה\"כ ליטרים"] * avg_price).round(0)
-        st.dataframe(by_tool.sort_values("סה\"כ ליטרים", ascending=False),
+        display_dataframe(by_tool.sort_values("סה\"כ ליטרים", ascending=False),
                      use_container_width=True, hide_index=True)
 
         with st.expander("פירוט תדלוקים"):
             cols = [c for c in ["date", "tool_name", "license_num", "liters",
                                 "engine_hours", "lph_calculated"]
                     if c in solar.columns]
-            st.dataframe(solar[cols].sort_values("date"),
+            display_dataframe(solar[cols].sort_values("date"),
                          use_container_width=True, hide_index=True)
 
     # ── תדלוקים ללא שעות עבודה (חשד) ──
@@ -872,7 +890,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
             disp["estimated_waste_nis"] = disp["estimated_waste_nis"].round(0)
             disp.columns = ["מס' רישוי", "שם כלי", "סוג כלי", "חודש",
                             "סה\"כ ליטרים", "בזבוז משוער (₪)"]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── מה דורש קלט חיצוני ──
     with st.expander("💡 מה דורש קלט חיצוני להשלמת המודול"):
@@ -900,13 +918,13 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
         by_supm = maint.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
         by_supm.columns = ["ספק / מוסך", "סה\"כ (₪)", "תנועות"]
         by_supm["סה\"כ (₪)"] = by_supm["סה\"כ (₪)"].round(0)
-        st.dataframe(by_supm.sort_values("סה\"כ (₪)", ascending=False),
+        display_dataframe(by_supm.sort_values("סה\"כ (₪)", ascending=False),
                      use_container_width=True, hide_index=True)
 
         with st.expander("פירוט תנועות אחזקה"):
             cols = [c for c in ["date", "month", "account_name", "supplier",
                                 "description", "amount"] if c in maint.columns]
-            st.dataframe(maint[cols].sort_values("date" if "date" in cols else cols[0]),
+            display_dataframe(maint[cols].sort_values("date" if "date" in cols else cols[0]),
                          use_container_width=True, hide_index=True)
 
     # ── הזנות ידניות: יומן סולר + אחזקה ──
@@ -926,7 +944,7 @@ def _tab_fuel_maintenance(df: pd.DataFrame, project_meta: dict | None = None) ->
                    "notes": "הערות"}
             disp = fl[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
             t_l = float(fl["liters"].sum()) if "liters" in fl.columns else 0
             t_c = float(fl["total_cost"].sum()) if "total_cost" in fl.columns else 0
             st.caption(f"סה\"כ ידני: {t_l:,.0f} ל' / ₪{t_c:,.0f}")
@@ -1031,7 +1049,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
         "over_norm": "מצב",
     }
     disp.columns = [heb.get(c, c) for c in show_cols]
-    st.dataframe(disp.sort_values("עלות סולר משוערת (₪)" if "עלות סולר משוערת (₪)" in disp.columns else disp.columns[0],
+    display_dataframe(disp.sort_values("עלות סולר משוערת (₪)" if "עלות סולר משוערת (₪)" in disp.columns else disp.columns[0],
                                   ascending=False),
                  use_container_width=True, hide_index=True)
 
@@ -1051,7 +1069,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
             disp.columns = ["מס' רישוי", "שם כלי", "חודש", "סה\"כ ל'",
                             "סה\"כ שעות", "ל'/ש' בפועל", "תקן עליון",
                             "חריגה (ל')", "נזק (₪)", "חומרה"]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
     else:
         st.caption("נדרשים גם דוח תדלוקים וגם דוח שעות לזיהוי חריגות סולר.")
 
@@ -1077,12 +1095,12 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
                "hours_until_service": "שעות נותרות"}
         disp = treatments[cols].copy()
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     log = site_data.get("treatments_log", pd.DataFrame())
     if not log.empty:
         sec("יומן טיפולים")
-        st.dataframe(log, use_container_width=True, hide_index=True)
+        display_dataframe(log, use_container_width=True, hide_index=True)
 
     fluids = site_data.get("other_fluids", pd.DataFrame())
     if not fluids.empty:
@@ -1097,7 +1115,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
                    "hydraulic_oil_l": "שמן הידראולי (ל')",
                    "engine_oil_2_l": "שמן מנוע 2 (ל')"}
             per_tool.columns = [heb.get(c, c) for c in per_tool.columns]
-            st.dataframe(per_tool, use_container_width=True, hide_index=True)
+            display_dataframe(per_tool, use_container_width=True, hide_index=True)
 
     # ── הזנות ידניות: שעות כלים + טיפולים ──
     if project_meta:
@@ -1116,7 +1134,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
                    "notes": "הערות"}
             disp = eq[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
         sec("טיפולים ידני")
         ml = control_db.list_rows("maintenance_logs", pid)
@@ -1134,7 +1152,7 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
                    "notes": "הערות"}
             disp = ml[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── הסבר על מה שחסר ──
     with st.expander("💡 מה שעוד דורש קלט חיצוני"):
@@ -1177,7 +1195,7 @@ def _tab_transactions(df: pd.DataFrame) -> None:
     for c in ("סכום", "סכום (₪)", "חובה", "זכות", "נטו", "נטו (₪)"):
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce")
-    st.dataframe(disp, use_container_width=True, hide_index=True,
+    display_dataframe(disp, use_container_width=True, hide_index=True,
                   column_config=build_column_config(disp.columns))
 
 
@@ -1324,7 +1342,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             "תנועות נטענו": chash_n,
         })
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        display_dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.caption("אין חודשים בתיקיית הפרויקט.")
 
@@ -1335,7 +1353,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         ins("green", "✓", "כל החשבונות מקוטלגים", "אין שום חשבון בקטגוריית ברירת מחדל.")
     else:
         st.caption(f"{len(unmapped)} חשבונות. עדכן את category_mapping.xlsx כדי לסווג אותם נכון.")
-        st.dataframe(unmapped, use_container_width=True, hide_index=True)
+        display_dataframe(unmapped, use_container_width=True, hide_index=True)
         col_dl, col_log = st.columns([2, 1])
         with col_dl:
             from io import BytesIO
@@ -1375,7 +1393,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             st.caption(f"{len(empty_sup)} תנועות מעל ₪1000 ללא ספק זוהה.")
             cols = [c for c in ["date", "account_num", "account_name",
                                 "description", "amount"] if c in empty_sup.columns]
-            st.dataframe(empty_sup[cols], use_container_width=True, hide_index=True)
+            display_dataframe(empty_sup[cols], use_container_width=True, hide_index=True)
 
     # ── 3. כפילויות חשודות (אותו ספק, סכום, חודש) ──
     sec("כפילויות חשודות")
@@ -1391,7 +1409,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             disp = dup_groups.copy()
             disp.columns = ["ספק", "סכום (₪)", "חודש", "כפילויות"]
             disp["סכום (₪)"] = disp["סכום (₪)"].round(0)
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── 4. סולר ללא כלי / כלים ללא שעות ──
     sec("חוסרי שיוך - סולר ושעות")
@@ -1405,7 +1423,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             if orphan_fuel.empty:
                 ins("green", "✓", "אין", "כל התדלוקים שויכו לכלי.")
             else:
-                st.dataframe(orphan_fuel[["date", "tool_name", "liters"]],
+                display_dataframe(orphan_fuel[["date", "tool_name", "liters"]],
                              use_container_width=True, hide_index=True)
     with cB:
         st.markdown("**שעות עבודה בלי license_num**")
@@ -1416,7 +1434,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             if orphan_hrs.empty:
                 ins("green", "✓", "אין", "כל השעות שויכו לכלי.")
             else:
-                st.dataframe(orphan_hrs[["date", "tool_name", "work_hours"]],
+                display_dataframe(orphan_hrs[["date", "tool_name", "work_hours"]],
                              use_container_width=True, hide_index=True)
 
     # ── 5. הכנסות לא מסווגות ──
@@ -1430,7 +1448,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     else:
         cols = [c for c in ["date", "account_num", "account_name", "supplier",
                             "description", "amount"] if c in unclassified_income.columns]
-        st.dataframe(unclassified_income[cols], use_container_width=True, hide_index=True)
+        display_dataframe(unclassified_income[cols], use_container_width=True, hide_index=True)
 
     # ════════════════════════════════════════════════════════
     # סיווג ואיכות נתונים (לפי המפרט החדש)
@@ -1456,7 +1474,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         if "net_amount" in disp.columns:
             disp["net_amount"] = disp["net_amount"].round(0)
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── 7. זיכויים בהוצאות (לוודא שלא נספרו כהכנסה) ──
     sec("זיכויים בהוצאות", meta="זכות בכרטיס הוצאה = הקטנת הוצאה, לא הכנסה")
@@ -1476,7 +1494,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             if c in disp.columns:
                 disp[c] = disp[c].round(0)
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── 8. זיכויים בהכנסות (חובה בכרטיס הכנסות = הקטנת הכנסה) ──
     sec("זיכויים/תיקונים בהכנסות", meta="חובה בכרטיס הכנסות = הקטנת הכנסה, לא הוצאה")
@@ -1495,7 +1513,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             if c in disp.columns:
                 disp[c] = disp[c].round(0)
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── 9. חשבונות הכנסה שזוהו ──
     sec("חשבונות הכנסה שזוהו")
@@ -1510,7 +1528,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             "ודא שהכרטיס כולל חשבונות עם 'הכנסות' בשם או מספרי 927/951/7367.")
     else:
         rev_accounts.columns = ["מס' חשבון", "שם חשבון", "מס' תנועות", "נטו (₪)"]
-        st.dataframe(rev_accounts.sort_values("נטו (₪)", ascending=False),
+        display_dataframe(rev_accounts.sort_values("נטו (₪)", ascending=False),
                      use_container_width=True, hide_index=True)
 
     # ── 10. חשבונות דלק ואנרגיה - פירוט ──
@@ -1525,7 +1543,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             n_suppliers=("supplier", lambda s: s[s != ""].nunique()),
         ).reset_index().round(0)
         fuel_agg.columns = ["תת-קטגוריה", "תנועות", "סכום נטו (₪)", "ספקים"]
-        st.dataframe(fuel_agg.sort_values("סכום נטו (₪)", ascending=False),
+        display_dataframe(fuel_agg.sort_values("סכום נטו (₪)", ascending=False),
                      use_container_width=True, hide_index=True)
 
     # ════════════════════════════════════════════════════════
@@ -1547,7 +1565,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         st.caption(f"{len(no_sup)} תנועות הוצאה ללא ספק (לא שכר). סה\"כ ₪{no_sup['net_amount'].sum():,.0f}.")
         cols = [c for c in ["date", "account_num", "account_name",
                             "description", "net_amount"] if c in no_sup.columns]
-        st.dataframe(no_sup[cols], use_container_width=True, hide_index=True)
+        display_dataframe(no_sup[cols], use_container_width=True, hide_index=True)
 
     # ── 12. שכר שזוהה בטעות כספק ──
     sec("שכר שזוהה בטעות כספק", meta="ספק שמכיל 'שכ\"ע' או דפוס תאריך פנימי")
@@ -1561,7 +1579,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         st.caption(f"{len(bad_sal)} תנועות שכר מזוהות בטעות כספק.")
         cols = [c for c in ["date", "account_num", "supplier", "description",
                             "net_amount"] if c in bad_sal.columns]
-        st.dataframe(bad_sal[cols], use_container_width=True, hide_index=True)
+        display_dataframe(bad_sal[cols], use_container_width=True, hide_index=True)
 
     # ── 13. ספק שמופיע בכמה קטגוריות ──
     sec("ספק שמופיע ביותר מקטגוריה אחת")
@@ -1581,7 +1599,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             joined = multi_cat.merge(cats_per, on="supplier")
             joined.columns = ["ספק", "מס' קטגוריות", "קטגוריות"]
             st.caption(f"{len(joined)} ספקים מופיעים ביותר מקטגוריה אחת - לבדוק אם זה נכון.")
-            st.dataframe(joined.sort_values("מס' קטגוריות", ascending=False),
+            display_dataframe(joined.sort_values("מס' קטגוריות", ascending=False),
                          use_container_width=True, hide_index=True)
 
     # ════════════════════════════════════════════════════════
@@ -1641,7 +1659,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             cols = [c for c in ["date", "source_kind", "supplier", "description",
                                   "fuel_type", "qty_liters", "total_cost", "match_note"]
                     if c in no_eq.columns]
-            st.dataframe(no_eq[cols].head(50), use_container_width=True, hide_index=True)
+            display_dataframe(no_eq[cols].head(50), use_container_width=True, hide_index=True)
             if len(no_eq) > 50:
                 st.caption(f"מציג 50 מתוך {len(no_eq)}. כל החריגות ניתנות לייצוא בטאב סולר.")
 
@@ -1654,7 +1672,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             cols = [c for c in ["date", "matched_tool_name", "matched_license_num",
                                   "fuel_type", "validation_note", "total_cost"]
                     if c in mismatch.columns]
-            st.dataframe(mismatch[cols], use_container_width=True, hide_index=True)
+            display_dataframe(mismatch[cols], use_container_width=True, hide_index=True)
 
         # ── 17. inactive_equipment_has_fuel ──
         sec("דלק לכלי לא פעיל")
@@ -1665,7 +1683,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             st.caption(f"{len(inactive_alerts)} תנועות דלק לכלים מושבתים.")
             cols = [c for c in ["date", "matched_tool_name", "matched_license_num",
                                   "fuel_type", "total_cost"] if c in inactive_alerts.columns]
-            st.dataframe(inactive_alerts[cols], use_container_width=True, hide_index=True)
+            display_dataframe(inactive_alerts[cols], use_container_width=True, hide_index=True)
 
         # ── 17b. תדלוק ללא ליטרים ──
         sec("תדלוק ללא ליטרים")
@@ -1678,7 +1696,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
         else:
             cols = [c for c in ["date", "source_kind", "supplier",
                                   "description", "total_cost"] if c in no_liters.columns]
-            st.dataframe(no_liters[cols].head(50),
+            display_dataframe(no_liters[cols].head(50),
                          use_container_width=True, hide_index=True)
             if len(no_liters) > 50:
                 st.caption(f"מציג 50 מתוך {len(no_liters)}.")
@@ -1693,7 +1711,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             else:
                 cols = [c for c in ["date", "source_kind", "supplier",
                                       "description", "total_cost"] if c in no_proj.columns]
-                st.dataframe(no_proj[cols], use_container_width=True, hide_index=True)
+                display_dataframe(no_proj[cols], use_container_width=True, hide_index=True)
         else:
             st.caption("אין עמודת project_id לבדוק.")
 
@@ -1707,7 +1725,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
             "התאמה: חלקי": int((enr["matched_by"] == "partial_tool_name").sum()),
             "לא מותאם": int((enr["matched_by"] == "unmatched").sum()),
         }
-        st.dataframe(pd.DataFrame([{"מקור התאמה": k, "כמות": v} for k, v in stats.items()]),
+        display_dataframe(pd.DataFrame([{"מקור התאמה": k, "כמות": v} for k, v in stats.items()]),
                      use_container_width=True, hide_index=True)
 
     # ── 19. סטטיסטיקת מקור סיווג דלק: מקובץ כללים מול ברירת מחדל ──
@@ -1751,7 +1769,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
                         "מעל החציון ב-": ((outliers / med - 1) * 100).round(0).values,
                     })
                     st.caption(f"{len(outliers)} ספקים חריגים (החציון: ₪{med:,.0f}).")
-                    st.dataframe(rows, use_container_width=True, hide_index=True)
+                    display_dataframe(rows, use_container_width=True, hide_index=True)
 
 
 # ════════════════════════════════════════════════════════════
@@ -1827,7 +1845,7 @@ def _render_tx_detail(tx_df: pd.DataFrame, title: str, key_prefix: str,
         if c in disp.columns:
             disp[c] = pd.to_numeric(disp[c], errors="coerce").round(0)
     disp = _heb_columns(disp, _FULL_TX_COL_HEB)
-    st.dataframe(disp, use_container_width=True, hide_index=True,
+    display_dataframe(disp, use_container_width=True, hide_index=True,
                   column_config=build_column_config(disp.columns))
     _excel_download(disp, sheet_name=title[:31],
                      file_name=f"{file_basename}_{key_prefix}.xlsx",
@@ -1872,7 +1890,7 @@ def _subtab_accounts_rollup(df: pd.DataFrame, project_meta: dict | None = None) 
                 "n_tx", "category", "mapped"]].sort_values("balance", ascending=False)
     disp.columns = ["מס' חשבון", "שם חשבון", "סה\"כ חובה", "סה\"כ זכות",
                     "יתרה", "תנועות", "קטגוריה", "ממופה"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    display_dataframe(disp, use_container_width=True, hide_index=True)
     st.caption(f"{len(agg)} חשבונות. {(agg['mapped'] == '✗').sum()} לא ממופים לקטגוריה.")
 
     # ── התאמת מאזן בוחן מול כרטיס ──
@@ -1907,7 +1925,7 @@ def _subtab_accounts_rollup(df: pd.DataFrame, project_meta: dict | None = None) 
                 show.columns = ["מס' חשבון", "שם חשבון", "מאזן-חובה", "מאזן-זכות",
                                   "כרטיס-חובה", "כרטיס-זכות",
                                   "הפרש חובה", "הפרש זכות", "סטטוס"]
-                st.dataframe(show, use_container_width=True, hide_index=True)
+                display_dataframe(show, use_container_width=True, hide_index=True)
                 if mismatch:
                     ins("amber", "⚠️", f"{mismatch} חשבונות לא תואמים",
                         "ייתכן בגלל יתרת פתיחה שלא נכללת בכרטיס, או טעות באחד הקבצים.")
@@ -2095,14 +2113,14 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
     sec("10 ספקים מובילים", meta="לפי הוצאה נטו")
     top10 = agg.head(10)[["supplier_display", "main_cat", "net", "pct_total", "n_tx"]].copy()
     top10.columns = ["ספק", "קטגוריה ראשית", "סה\"כ נטו (₪)", "% מסך", "תנועות"]
-    st.dataframe(top10, use_container_width=True, hide_index=True)
+    display_dataframe(top10, use_container_width=True, hide_index=True)
 
     # ── טבלת ספקים מלאה ──
     sec(f"כל הספקים ({len(agg)})")
     full = agg.copy()
     full.columns = ["ספק", "סה\"כ חובה", "סה\"כ זכות", "הוצאה נטו",
                     "תנועות", "חודשים", "קטגוריה ראשית", "תת-קטגוריה", "% מסך"]
-    st.dataframe(full, use_container_width=True, hide_index=True)
+    display_dataframe(full, use_container_width=True, hide_index=True)
 
     # ── הפרדה לפי סוג ספק ──
     sec("הפרדה לפי סוג ספק")
@@ -2116,7 +2134,7 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
         n_tx=("net_amount", "size"),
     ).reset_index().round(0).sort_values("net", ascending=False)
     by_grp.columns = ["קבוצת ספקים", "סה\"כ (₪)", "ספקים", "תנועות"]
-    st.dataframe(by_grp, use_container_width=True, hide_index=True)
+    display_dataframe(by_grp, use_container_width=True, hide_index=True)
 
     # ── Drill-down: בחירת ספק לפירוט מלא ──
     sec("פירוט תנועות לספק", meta="בחר ספק לפירוט מלא + ייצוא לאקסל")
@@ -2156,7 +2174,7 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
             if c in disp.columns:
                 disp[c] = disp[c].round(0)
         disp.columns = [heb.get(c, c) for c in detail_cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
         # ייצוא אקסל
         from io import BytesIO
@@ -2198,7 +2216,7 @@ def _subtab_collection_status(df: pd.DataFrame) -> None:
     cols_rename = {"date": "תאריך", "supplier": "לקוח", "description": "פרטים",
                     "amount": "סכום (₪)", "month": "חודש"}
     disp.columns = [cols_rename.get(c, c) for c in cols] + ["סטטוס גבייה"]
-    st.dataframe(disp.sort_values("תאריך"), use_container_width=True, hide_index=True)
+    display_dataframe(disp.sort_values("תאריך"), use_container_width=True, hide_index=True)
 
     ins("amber", "ℹ️", "סטטוס גבייה לא מנוטר אוטומטית",
         "כרטיס ההנהלה לא כולל סטטוס תשלום. לתצוגה אמיתית של פתוח/שולם - "
@@ -2364,7 +2382,7 @@ def _render_hours_detail(df: pd.DataFrame, title: str, key_prefix: str) -> None:
     if "date" in disp.columns:
         disp = disp.sort_values("date")
     disp.columns = [heb.get(c, c) for c in cols]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    display_dataframe(disp, use_container_width=True, hide_index=True)
     _excel_download(disp, sheet_name=title[:31],
                       file_name=f"hours_{key_prefix}.xlsx",
                       key=f"dl_hours_{key_prefix}")
@@ -2410,7 +2428,7 @@ def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
                "section": "סעיף", "notes": "הערות"}
         disp = site_hours[cols].sort_values("date" if "date" in cols else cols[0])
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp.head(200), use_container_width=True, hide_index=True)
+        display_dataframe(disp.head(200), use_container_width=True, hide_index=True)
         if len(site_hours) > 200:
             st.caption(f"מציג 200 מתוך {len(site_hours)}")
 
@@ -2423,7 +2441,7 @@ def _subtab_equipment_hours(df: pd.DataFrame, project_meta: dict) -> None:
                "notes": "הערות"}
         disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── Drill-Down: בחר כלי/חודש ──
     combined = []
@@ -2466,7 +2484,7 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
             hours=("work_hours", "sum"),
         ).reset_index().sort_values("hours", ascending=False).round(1)
         per.columns = ["שם קבלן/משאית", "ימי עבודה", "סה\"כ שעות"]
-        st.dataframe(per, use_container_width=True, hide_index=True)
+        display_dataframe(per, use_container_width=True, hide_index=True)
 
         with st.expander("פירוט יומי"):
             cols = [c for c in ["date", "name", "license_num", "start_time",
@@ -2476,7 +2494,7 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
                    "work_hours": "שעות", "notes": "הערות"}
             disp = sub_hours[cols].sort_values("date" if "date" in cols else cols[0])
             disp.columns = [heb.get(c, c) for c in cols]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     if not manual.empty:
         sec("הזנות ידניות")
@@ -2487,7 +2505,7 @@ def _subtab_contractors_field(df: pd.DataFrame, project_meta: dict) -> None:
                "price": "מחיר", "invoice_num": "חשבונית"}
         disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── Drill-Down: בחר קבלן / חודש ──
     combined_c = []
@@ -2569,7 +2587,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                             sup.columns = ["ספק", "סה\"כ (₪)", "תנועות"]
                             sup["סה\"כ (₪)"] = sup["סה\"כ (₪)"].round(0)
                             st.markdown("**ספקים עיקריים**")
-                            st.dataframe(sup.sort_values("סה\"כ (₪)", ascending=False),
+                            display_dataframe(sup.sort_values("סה\"כ (₪)", ascending=False),
                                          use_container_width=True, hide_index=True)
                     # פירוט תנועות
                     show_cols = [c for c in ["date", "month", "supplier", "description",
@@ -2585,7 +2603,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                             disp[c] = disp[c].round(0)
                     disp.columns = [heb.get(c, c) for c in show_cols]
                     st.markdown("**פירוט תנועות**")
-                    st.dataframe(disp, use_container_width=True, hide_index=True)
+                    display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── דלק לפי כלי - שילוב מקורות + matching ל-equipment ──
     sec("דלק לפי כלי", meta="חיבור אוטומטי לרשימת הכלים")
@@ -2706,7 +2724,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                                   "n_tx", "n_months", "status"]].copy()
                 disp.columns = ["מס' רישוי", "שם כלי", "קבוצה", "סוג דלק מוגדר",
                                 "ליטרים", "סה\"כ ₪", "תנועות", "חודשים", "סטטוס"]
-                st.dataframe(disp.sort_values("סה\"כ ₪", ascending=False),
+                display_dataframe(disp.sort_values("סה\"כ ₪", ascending=False),
                              use_container_width=True, hide_index=True)
             else:
                 st.caption("אף תנועת דלק לא הצליחה להתאים לכלי.")
@@ -2732,7 +2750,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                 cand_disp["סוג דלק משוער"] = cand_disp["sample_description"].apply(_guess_fuel_type)
                 cand_disp.columns = ["מס' רישוי שחולץ", "פרטים",
                                        "תנועות", "סה\"כ (₪)", "סוג דלק משוער"]
-                st.dataframe(cand_disp, use_container_width=True, hide_index=True)
+                display_dataframe(cand_disp, use_container_width=True, hide_index=True)
 
                 # ייצוא הרכבים החסרים לאקסל
                 from io import BytesIO
@@ -2764,7 +2782,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                     if c in disp_u.columns:
                         disp_u[c] = pd.to_numeric(disp_u[c], errors="coerce").round(0)
                 disp_u.columns = [heb.get(c, c) for c in cols]
-                st.dataframe(disp_u, use_container_width=True, hide_index=True)
+                display_dataframe(disp_u, use_container_width=True, hide_index=True)
 
                 # ייצוא חריגות
                 from io import BytesIO
@@ -2794,7 +2812,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                     disp_e["total_cost"] = pd.to_numeric(disp_e["total_cost"],
                                                           errors="coerce").round(0)
                 disp_e.columns = [heb.get(c, c) for c in cols]
-                st.dataframe(disp_e, use_container_width=True, hide_index=True)
+                display_dataframe(disp_e, use_container_width=True, hide_index=True)
 
             # ── Drill-down: בחר כלי לראות את כל תנועות הדלק שלו ──
             if not matched.empty:
@@ -2827,7 +2845,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                                 disp_t[c] = pd.to_numeric(disp_t[c],
                                                             errors="coerce").round(0)
                         disp_t.columns = [heb.get(c, c) for c in cols]
-                        st.dataframe(disp_t.sort_values("תאריך" if "תאריך" in disp_t.columns else disp_t.columns[0]),
+                        display_dataframe(disp_t.sort_values("תאריך" if "תאריך" in disp_t.columns else disp_t.columns[0]),
                                      use_container_width=True, hide_index=True)
 
     # ── מקור 2 (לשעבר היה ראשי): דוח רכש פריטים - חשבונית-לחשבונית ──
@@ -2851,13 +2869,13 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
         with st.expander("לפי ספק", expanded=True):
             sup = summary_by_supplier(inv)
             sup.columns = ["ספק", "חשבוניות", "ליטרים", "סה\"כ (₪)", "₪/ל'"]
-            st.dataframe(sup, use_container_width=True, hide_index=True)
+            display_dataframe(sup, use_container_width=True, hide_index=True)
 
         # ─ סיכום חודשי + זיהוי קפיצות מחיר ─
         with st.expander("לפי חודש (₪/ליטר) - לזיהוי קפיצות מחיר", expanded=True):
             mo = summary_by_month(inv)
             mo.columns = ["חודש", "חשבוניות", "ליטרים", "סה\"כ (₪)", "₪/ל'"]
-            st.dataframe(mo, use_container_width=True, hide_index=True)
+            display_dataframe(mo, use_container_width=True, hide_index=True)
             # התראה אם יש קפיצה משמעותית
             if len(mo) >= 2:
                 prices = mo["₪/ל'"].astype(float)
@@ -2877,7 +2895,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
             disp["total_cost"] = disp["total_cost"].round(0)
             disp.columns = ["תאריך", "מס' חשבונית", "ספק", "ליטרים",
                             "₪/ל'", "סה\"כ (₪)", "פרטים", "חודש"]
-            st.dataframe(disp.sort_values("תאריך", ascending=False),
+            display_dataframe(disp.sort_values("תאריך", ascending=False),
                          use_container_width=True, hide_index=True)
 
     # ── מקור 2: חשבשבת כרטיס (חשבונות סולר) ──
@@ -2912,14 +2930,14 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
         disp.columns = [heb.get(c, c) for c in cols]
         if "סכום (₪)" in disp.columns:
             disp["סכום (₪)"] = disp["סכום (₪)"].round(0)
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
         # קבץ לפי ספק
         with st.expander("חלוקה לפי ספק"):
             by_sup = fuel_chash.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
             by_sup.columns = ["ספק", "סה\"כ (₪)", "חשבוניות"]
             by_sup["סה\"כ (₪)"] = by_sup["סה\"כ (₪)"].round(0)
-            st.dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
+            display_dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
                          use_container_width=True, hide_index=True)
 
     if not manual.empty:
@@ -2932,7 +2950,7 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                "liters": "ל'", "price_per_liter": "₪/ל'", "total_cost": "סה\"כ"}
         disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── סולר וכלים → שימוש בסולר ──────────────────────────────
@@ -2962,7 +2980,7 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                 if c in solar.columns]
         disp = solar[cols].copy().sort_values("date" if "date" in cols else cols[0])
         disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     if not site_fuel.empty:
         sec("תדלוקים מיומן שטח")
@@ -2971,7 +2989,7 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                 if c in site_fuel.columns]
         disp = site_fuel[cols].copy().sort_values("date" if "date" in cols else cols[0])
         disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── סולר וכלים → מלאי סולר (Step 4) ───────────────────────
@@ -3098,7 +3116,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
             disp = balance.copy()
             disp.columns = ["חודש", "פתיחה (ל')", "קניות (ל')", "שימושים (ל')",
                             "סגירה צפויה", "סגירה בפועל", "הפרש", "סטטוס"]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
             n_bad = int((balance["status"] == "חוסר").sum())
             if n_bad:
                 ins("amber", "⚠️", f"{n_bad} חודשים עם חוסר במלאי",
@@ -3124,7 +3142,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
             "תנועות": len(sub_chash),
             "מאזן פיזי": "✓ רלוונטי" if has_inv else "— לא נדרש",
         })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    display_dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     # ── Reconciliation: chashbashevet vs fuel_invoices ──
     sec("התאמה בין מקורות", meta="כרטיס הנהלה ↔ דוח רכש פריטים ↔ יומן שטח")
@@ -3143,16 +3161,39 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
         {"מקור": "יומן שטח (solar.xlsx)", "₪": "—",
          "ליטרים": round(field_solar_l, 0), "תנועות": len(solar)},
     ]
-    st.dataframe(pd.DataFrame(recon_data), use_container_width=True, hide_index=True)
+    display_dataframe(pd.DataFrame(recon_data), use_container_width=True, hide_index=True)
 
+    # ── מסקנה ניהולית: ההפרש בין הרישום החשבונאי לדוח הרכש ──
     if zmh_chash_total and book_total:
-        diff_pct = abs(book_total - zmh_chash_total) / zmh_chash_total * 100
-        if diff_pct > 5:
-            ins("amber", "⚠️", f"הפרש של {diff_pct:.1f}% בין כרטיס לדוח רכש",
-                f"כרטיס: ₪{zmh_chash_total:,.0f} | דוח רכש: ₪{book_total:,.0f} | "
-                f"הפרש: ₪{book_total - zmh_chash_total:+,.0f}. ייתכן מע\"מ או טווח תאריכים.")
+        diff_abs = book_total - zmh_chash_total
+        diff_pct = abs(diff_abs) / zmh_chash_total * 100
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("רכש מכרטיס הנהלה", format_currency(zmh_chash_total))
+        kpi2.metric("רכש לפי דוח פריטים", format_currency(book_total))
+        kpi3.metric("הפרש", format_currency(diff_abs),
+                     delta=f"{diff_pct:.1f}%",
+                     delta_color="inverse")
+
+        # נתוני מלאי חסרים → אסור להציג "התאמה טובה"
+        has_inventory = not inv_all.empty if 'inv_all' in dir() else False
+        if not has_inventory:
+            ins("blue", "ℹ️", "התאמה חלקית - חסרים נתוני מלאי",
+                "ההשוואה כעת היא רק בין סכומי הרכש (כרטיס מול דוח). "
+                "ללא מלאי פתיחה/סגירה אי אפשר לחשב פערי שימוש אמיתיים.")
+        elif diff_pct > 10:
+            ins("red", "🚨", f"סטייה גדולה: {diff_pct:.1f}%",
+                f"הפרש של {format_currency(diff_abs)} בין הרישום לחיובים. "
+                "דורש בדיקה — ייתכן שחסר חשבונית או נרשם פעמיים.")
+        elif diff_pct > 5:
+            ins("amber", "⚠️", f"סטייה בינונית: {diff_pct:.1f}%",
+                f"הפרש של {format_currency(diff_abs)}. "
+                "סבירה בגלל מע\"מ או טווח תאריכים — מומלץ לבדוק את החודש האחרון.")
         else:
-            ins("green", "✓", f"התאמה טובה ({diff_pct:.1f}% הפרש)", "")
+            ins("green", "✓", f"סטייה סבירה: {diff_pct:.1f}%",
+                f"הפרש של {format_currency(diff_abs)} בלבד — בטווח המקובל.")
+    else:
+        ins("blue", "ℹ️", "אי אפשר לחשב התאמה",
+            "חסרים נתונים: ודא שיש סכומי רכש מכרטיס ההנהלה וגם מדוח הרכש.")
 
     # ── רשימת רישומי מלאי קיימים (כולל עריכה/מחיקה) ──
     if not inv_db.empty:
@@ -3161,7 +3202,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
                          "closing_l", "notes"]].copy()
         disp.columns = ["חודש", "סוג דלק", "מזהה מיכל",
                         "פתיחה (ל')", "סגירה (ל')", "הערות"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
         del_id = st.number_input("מחק רישום לפי ID", min_value=0, step=1, value=0,
                                     key=f"del_finv_{project_id}")
         if st.button("🗑 מחק רישום", key=f"del_finv_btn_{project_id}",
@@ -3196,7 +3237,7 @@ def _subtab_consumption_per_tool(df: pd.DataFrame, project_meta: dict) -> None:
         disp.columns = ["מס' רישוי", "שם כלי", "חודש", "סה\"כ ל'",
                         "סה\"כ שעות", "ל'/ש' בפועל", "תקן עליון",
                         "חריגה (ל')", "נזק (₪)", "חומרה"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── סולר וכלים → טיפולים ואחזקה ───────────────────────────
@@ -3215,7 +3256,7 @@ def _subtab_maintenance(df: pd.DataFrame, project_meta: dict) -> None:
         by_sup = maint.groupby("supplier")["amount"].agg(["sum", "count"]).reset_index()
         by_sup.columns = ["ספק / מוסך", "סה\"כ (₪)", "תנועות"]
         by_sup["סה\"כ (₪)"] = by_sup["סה\"כ (₪)"].round(0)
-        st.dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
+        display_dataframe(by_sup.sort_values("סה\"כ (₪)", ascending=False),
                      use_container_width=True, hide_index=True)
 
     from pipeline import load_site_tracking_data
@@ -3235,7 +3276,7 @@ def _subtab_maintenance(df: pd.DataFrame, project_meta: dict) -> None:
                "hours_until_service": "נותרו"}
         disp = treatments[cols].copy()
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     from core import control_db
     manual = control_db.list_rows("maintenance_logs", project_id)
@@ -3250,7 +3291,7 @@ def _subtab_maintenance(df: pd.DataFrame, project_meta: dict) -> None:
                "invoice_num": "חשבונית"}
         disp = manual[cols].sort_values("date" if "date" in cols else cols[0])
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
 
 # ─── סולר וכלים → עלות כלי לשעה ────────────────────────────
@@ -3302,7 +3343,7 @@ def _subtab_cost_per_hour(df: pd.DataFrame, project_meta: dict) -> None:
     disp.columns = ["מס' רישוי", "שם כלי", "סה\"כ שעות",
                     "סה\"כ ליטרים", "עלות סולר (₪)", "עלות אחזקה (₪)",
                     "סה\"כ עלות (₪)", "₪ לשעה"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    display_dataframe(disp, use_container_width=True, hide_index=True)
     st.caption("עלות אחזקה מחולקת באופן יחסי לשעות העבודה - מודל פשוט. "
                "לדיוק מלא, נדרש שדה license_num בכל חשבונית אחזקה.")
 
@@ -3333,7 +3374,7 @@ def _subtab_import_history(project_meta: dict) -> None:
                "file_name": "שם קובץ", "rows_loaded": "שורות נטענו",
                "file_size_kb": "גודל KB", "status": "סטטוס", "imported_by": "משתמש"}
         disp.columns = [heb.get(c, c) for c in cols]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── מחיקת חודש מלא מהמערכת ──
     sec("מחיקת חודש מהמערכת", meta="מסיר רשומות מבסיס הנתונים (אופציונלית גם קבצים)")
@@ -3409,7 +3450,7 @@ def _subtab_backup_export(project_meta: dict) -> None:
         with st.expander(f"היסטוריית גיבויים ({len(backups_list)})"):
             disp = backups_list.copy()
             disp.columns = ["שם קובץ", "גודל (KB)", "תאריך"]
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            display_dataframe(disp, use_container_width=True, hide_index=True)
 
     sec("ייצוא נתוני פרויקט לאקסל")
     if st.button("📊 צור קובץ Excel עם כל נתוני הפרויקט", key="export_xlsx"):
@@ -3581,7 +3622,7 @@ def _subtab_equipment_full_detail(df: pd.DataFrame, project_meta: dict) -> None:
     for c in ("ליטרים", "שעות", "סכום (₪)"):
         if c in tdf.columns:
             tdf[c] = pd.to_numeric(tdf[c], errors="coerce").round(1)
-    st.dataframe(tdf, use_container_width=True, hide_index=True)
+    display_dataframe(tdf, use_container_width=True, hide_index=True)
     _excel_download(tdf, sheet_name=f"כלי_{lic}",
                       file_name=f"equipment_{lic}_full.xlsx",
                       key=f"dl_eq_full_{lic}")

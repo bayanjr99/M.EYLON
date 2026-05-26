@@ -80,6 +80,30 @@ def sec(title: str, meta: str = "") -> None:
     st.markdown(f'<div class="sec">{title}{meta_html}</div>', unsafe_allow_html=True)
 
 
+def breadcrumb(*parts: str) -> None:
+    """כותרת ניווט: 'כספים › ספקים' — תמיד בראש כל טאב.
+
+    נותן למשתמש הקשר תמידי לאיפה הוא במערכת. הפרידה היא '›' (קל יותר
+    מ-'>') ולא רגיש לכיוון RTL.
+
+    שימוש:
+        breadcrumb("כספים", "ספקים")
+        breadcrumb("דלק", "התאמות")
+    """
+    if not parts:
+        return
+    chain = '<span class="bc-sep"> › </span>'.join(
+        f'<span class="bc-part">{p}</span>' for p in parts
+    )
+    st.markdown(
+        f'<div class="breadcrumb" style="font-size:12px;color:#64748B;'
+        f'margin:6px 0 10px;font-weight:600;letter-spacing:.2px">'
+        f'<i class="ti ti-arrow-narrow-left" style="margin-left:4px;font-size:13px"></i>'
+        f'{chain}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ── Block card ───────────────────────────────────────────────
 def blk(label: str, body: str, cls: str = "") -> None:
     """כרטיס תוכן עם תווית קטנה למעלה. cls אופציונלית: 'warm' / 'dark'."""

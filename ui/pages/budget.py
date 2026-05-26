@@ -8,7 +8,7 @@ import streamlit as st
 
 from core import budget_db
 from ui.components import ins, sec
-from ui.formatters import format_currency, format_percent
+from ui.formatters import format_currency, format_percent, display_dataframe
 
 
 CONTRACT_TYPES = {
@@ -156,7 +156,7 @@ def render_budget_tab(df: pd.DataFrame, project_meta: dict) -> None:
         lambda v: format_percent(v, already_pct=True) if pd.notna(v) else "—"
     )
     disp.columns = ["קטגוריה", "תקציב", "בפועל", "יתרה", "% ניצול", "סטטוס"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── התראות ──
     over_budget = cmp_df[(cmp_df["category"] != "הכנסות") &
