@@ -50,3 +50,6 @@ desktop.ini
 
 # Streamlit local secrets
 .streamlit/secrets.toml
+
+# Claude Code working state (sessions, agent worktrees, transcripts)
+.claude/
