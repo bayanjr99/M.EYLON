@@ -3917,22 +3917,111 @@ def _subtab_fuel_matching(df: pd.DataFrame, project_meta: dict) -> None:
                         "סה\"כ ₪"]
         display_dataframe(disp)
 
-    # ── שיוכים ידניים קיימים — לעריכה ──
+    # ── שיוכים ידניים קיימים — לעריכה / ביטול ──
     existing = fuel_assignments.list_assignments(project_id)
     if not existing.empty:
         sec("📋 שיוכים ידניים שמורים",
-            meta=f"{len(existing)} שיוכים — ניתן לבטל")
-        # החלף license_num לתצוגה של "lic · tool_name"
-        eq_idx = equipment.set_index("license_num", drop=False)
-        existing["כלי"] = existing["license_num"].map(
-            lambda lic: f"{int(lic)} · {eq_idx.loc[lic, 'tool_name']}"
-            if lic in eq_idx.index else f"{int(lic)} (לא ברשימה)"
+            meta=f"{len(existing)} שיוכים — לחץ '↩ בטל שיוך' לכל שורה כדי להחזיר אותה לרשימת התנועות הלא משויכות")
+
+        # קישור row_hash → פרטי התנועה המקורית, לתצוגה
+        # נבנה lookup מ-enriched כדי להראות לאיזה תנועה השיוך מתייחס.
+        enriched["_hash"] = enriched.apply(
+            lambda r: fuel_assignments.row_hash(
+                r.get("date"), r.get("supplier"),
+                r.get("total_cost") or r.get("amount"),
+                r.get("description"),
+            ),
+            axis=1,
         )
-        existing["נוצר"] = pd.to_datetime(existing["assigned_at"],
-                                              errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
-        disp = existing[["row_hash", "כלי", "נוצר", "notes"]].copy()
-        disp.columns = ["מזהה שורה", "כלי", "נוצר", "הערות"]
-        display_dataframe(disp)
+        enriched_lookup = enriched.set_index("_hash", drop=False)
+
+        eq_idx = equipment.set_index("license_num", drop=False)
+
+        for _, assign_row in existing.iterrows():
+            h = assign_row["row_hash"]
+            lic = int(assign_row["license_num"])
+            tool_label = (
+                f"{lic} · {eq_idx.loc[lic, 'tool_name']}"
+                if lic in eq_idx.index else f"{lic} (לא ברשימת הכלים)"
+            )
+            created_at = pd.to_datetime(assign_row["assigned_at"],
+                                            errors="coerce")
+            created_str = created_at.strftime("%d/%m/%Y %H:%M") \
+                if pd.notna(created_at) else "—"
+
+            # פרטי התנועה המקורית — אם מצאנו אותה
+            tx_label = ""
+            tx_amount_str = ""
+            tx_date_str = ""
+            tx_supplier = ""
+            tx_desc = ""
+            if h in enriched_lookup.index:
+                tx_row = enriched_lookup.loc[h]
+                if isinstance(tx_row, pd.DataFrame):
+                    tx_row = tx_row.iloc[0]
+                tx_date_str = pd.to_datetime(tx_row.get("date"),
+                                                 errors="coerce")
+                tx_date_str = tx_date_str.strftime("%d/%m/%Y") \
+                    if pd.notna(tx_date_str) else "—"
+                tx_supplier = str(tx_row.get("supplier") or "—")
+                tx_desc = str(tx_row.get("description") or "")
+                tx_amount = float(tx_row.get("total_cost")
+                                  or tx_row.get("amount") or 0)
+                tx_amount_str = format_currency(tx_amount)
+                tx_label = f" · 📅 {tx_date_str} · 🏪 {tx_supplier} · {tx_amount_str}"
+
+            label = f"🔗 → {tool_label}{tx_label}"
+
+            with st.expander(label, expanded=False):
+                st.caption(f"שויך בתאריך: {created_str}")
+                if tx_desc:
+                    st.caption(f"תיאור התנועה: {tx_desc}")
+                if assign_row.get("notes"):
+                    st.caption(f"הערות: {assign_row['notes']}")
+
+                # מנגנון 2-שלבי לאישור הביטול
+                confirm_key = f"unassign_confirm_{h}"
+                if not st.session_state.get(confirm_key):
+                    if st.button("↩ בטל שיוך", key=f"unassign_btn_{h}",
+                                   use_container_width=True):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                else:
+                    st.warning(
+                        f"❓ האם אתה בטוח שברצונך לבטל את השיוך ל-**{tool_label}**? "
+                        "התנועה תחזור לרשימת 'תנועות לא משויכות' וכל הסיכומים "
+                        "יחושבו מחדש."
+                    )
+                    yc, nc = st.columns(2)
+                    with yc:
+                        if st.button("✅ כן, בטל שיוך", key=f"unassign_yes_{h}",
+                                       use_container_width=True, type="primary"):
+                            # 1. הסר את השיוך מה-JSON
+                            fuel_assignments.unassign(project_id, h)
+                            # 2. רישום ל-audit_log
+                            try:
+                                from core import db
+                                db.log_event("unlink_fuel_to_tool", {
+                                    "project_id": project_id,
+                                    "row_hash": h,
+                                    "previous_license": lic,
+                                    "previous_tool": tool_label,
+                                    "tx_date": tx_date_str,
+                                    "tx_supplier": tx_supplier,
+                                    "tx_amount": tx_amount_str,
+                                })
+                            except Exception:
+                                # audit נכשל לא צריך לחסום את הביטול
+                                pass
+                            st.session_state.pop(confirm_key, None)
+                            st.cache_data.clear()
+                            st.success("✅ השיוך בוטל בהצלחה")
+                            st.rerun()
+                    with nc:
+                        if st.button("✖ ביטול", key=f"unassign_no_{h}",
+                                       use_container_width=True):
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
 
 
 # ─── סולר וכלים → טיפולים ואחזקה ───────────────────────────
