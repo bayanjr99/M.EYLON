@@ -233,7 +233,16 @@ def _render_tools_management() -> None:
             )]
             cols = [c for c in ["license_num", "tool_name", "tool_type", "norm_low", "norm_high"]
                     if c in xlsx_only.columns]
-            st.dataframe(xlsx_only[cols], use_container_width=True, hide_index=True)
+            heb_xlsx = {
+                "license_num": "מס' רישוי",
+                "tool_name":   "שם / דגם",
+                "tool_type":   "סוג",
+                "norm_low":    "תקן תחתון",
+                "norm_high":   "תקן עליון",
+            }
+            disp_xlsx = xlsx_only[cols].copy()
+            disp_xlsx.columns = [heb_xlsx.get(c, c) for c in cols]
+            st.dataframe(disp_xlsx, use_container_width=True, hide_index=True)
 
     # ── טופס הוספה (מתחת לרשימה) ──
     with st.expander("➕ הוסף כלי חדש", expanded=tools.empty):
