@@ -88,6 +88,11 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         _render_edit_project_form(project_id)
         return
 
+    # ── Drill-Down: אם נבחר ספק/לקוח/כלי/חודש → מציגים מסך פירוט ──
+    from ui.pages.detail_view import render_detail_view
+    if render_detail_view(df_master, project_meta):
+        return
+
     # ── Back button + Edit button + דוח מנהלים (שורה אחת מעל הכותרת) ──
     back_col, edit_col, report_col, _spacer = st.columns([1, 2, 2, 3])
     with back_col:
@@ -485,6 +490,17 @@ def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
                         .groupby("supplier")["amount"].sum().nlargest(10).round(0).reset_index())
             top_sup.columns = ["ספק", "סה\"כ (₪)"]
             display_dataframe(top_sup, use_container_width=True, hide_index=True)
+            from ui.pages.detail_view import drill_launcher
+            drill_launcher("supplier", top_sup["ספק"].tolist(),
+                            label="פתח פירוט ספק", key_suffix="overview")
+
+    # ── Drill-Down לחודש (מהסקירה) ──
+    if "month" in df.columns and df["month"].notna().any():
+        from ui.pages.detail_view import drill_launcher
+        months_avail = sorted(df["month"].dropna().unique())
+        sec("פירוט לפי חודש", meta="בחר חודש לפירוט מלא")
+        drill_launcher("month", months_avail,
+                        label="פתח פירוט חודש", key_suffix="overview")
 
     # ── Drill-Down: מה מרכיב את הסכומים? ──────────────────────
     sec("🔍 פירוט מלא לכל מדד",
@@ -608,6 +624,15 @@ def _tab_income(df: pd.DataFrame) -> None:
     disp = disp.sort_values("date" if "date" in show_cols else show_cols[0])
     disp.columns = [rename_map[c] for c in show_cols]
     display_dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── 🔍 פירוט לקוח ──
+    if "supplier" in income_all.columns:
+        customers = sorted(income_all["supplier"].dropna()
+                             .replace("", pd.NA).dropna().unique().tolist())
+        if customers:
+            from ui.pages.detail_view import drill_launcher
+            drill_launcher("customer", customers,
+                            label="פתח פירוט לקוח", key_suffix="income_tab")
 
     ins("blue", "ℹ️", "סטטוס גבייה",
         "סטטוס שולם/פתוח לא מנוטר אוטומטית מכרטיס ההנהלה. לתצוגה מלאה - "
@@ -1266,6 +1291,13 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
     disp.columns = [heb.get(c, c) for c in show_cols]
     sort_col = "סה\"כ עלות סולר (₪)" if "סה\"כ עלות סולר (₪)" in disp.columns else disp.columns[0]
     display_dataframe(disp.sort_values(sort_col, ascending=False))
+
+    # ── 🔍 פירוט כלי ──
+    tool_options = merged["license_num"].dropna().astype(int).tolist()
+    if tool_options:
+        from ui.pages.detail_view import drill_launcher
+        drill_launcher("tool", tool_options,
+                        label="פתח פירוט כלי", key_suffix="tools_tab")
 
     # ── חריגות סולר ──
     sec("חריגות צריכת סולר", meta="ל'/ש' מעל תקן × 1.15")
@@ -2597,6 +2629,13 @@ def _subtab_suppliers_finance(df: pd.DataFrame, project_meta: dict) -> None:
     top10 = agg.head(10)[["supplier_display", "main_cat", "net", "pct_total", "n_tx"]].copy()
     top10.columns = ["ספק", "קטגוריה ראשית", "סה\"כ נטו (₪)", "% מסך", "תנועות"]
     display_dataframe(top10, use_container_width=True, hide_index=True)
+
+    # ── 🔍 פירוט ספק ──
+    sup_options = agg["supplier_display"].dropna().tolist()
+    if sup_options:
+        from ui.pages.detail_view import drill_launcher
+        drill_launcher("supplier", sup_options,
+                        label="פתח פירוט ספק", key_suffix="finance_suppliers")
 
     # ── טבלת ספקים מלאה ──
     sec(f"כל הספקים ({len(agg)})")
