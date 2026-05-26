@@ -351,6 +351,15 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
         return False, f"הרגיסטרי עודכן אבל יצירת תיקיות נכשלה: {e}", pid
 
     logger.info("Created project: %s (%s)", pid, pname)
+    try:
+        from core import db
+        db.log_event("project_created", {
+            "project_id": pid, "project_name": pname,
+            "client": new_row.get("client_name", ""),
+            "status": status,
+        })
+    except Exception:
+        pass
     return True, f"פרויקט '{pname}' נוצר בהצלחה", pid
 
 
@@ -422,6 +431,15 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
         return False, f"הרגיסטרי עודכן אבל כתיבת project_meta.json נכשלה: {e}"
 
     logger.info("Updated project %s: %s", pid, list(normalized.keys()))
+    # audit
+    try:
+        from core import db
+        db.log_event("project_updated", {
+            "project_id": pid,
+            "fields_changed": list(normalized.keys()),
+        })
+    except Exception:
+        pass
     return True, "הפרויקט עודכן בהצלחה"
 
 
@@ -496,6 +514,15 @@ def delete_project(project_id: str,
 
     logger.info("Deleted project %s (folder=%s, trash=%s)",
                 pid, delete_folder, trash_path)
+    try:
+        from core import db
+        db.log_event("project_deleted", {
+            "project_id": pid,
+            "delete_folder": delete_folder,
+            "trash_path": trash_path,
+        })
+    except Exception:
+        pass
     msg = f"הפרויקט '{pid}' נמחק"
     if trash_path:
         msg += f". התיקייה הועברה ל-{trash_path}"

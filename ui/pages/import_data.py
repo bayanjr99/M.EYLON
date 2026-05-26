@@ -157,6 +157,28 @@ def render_import_page(projects: list[dict]) -> None:
     month_dir = PROJECTS_ROOT / project_id / month
     month_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── אזהרת חודש סגור ──
+    try:
+        from core import month_locks
+        if month_locks.is_locked(project_id, month):
+            confirm_key = f"imp_locked_confirm_{project_id}_{month}"
+            if not st.session_state.get(confirm_key):
+                st.error(
+                    f"🔒 חודש **{month}** סגור (נעול). ייבוא לחודש סגור עלול "
+                    "לשנות דוחות שכבר הופקו. דורש אישור מפורש."
+                )
+                cc, _ = st.columns([1, 4])
+                with cc:
+                    if st.button("✅ אני מאשר ייבוא לחודש סגור",
+                                   key=f"yes_locked_{project_id}_{month}",
+                                   type="primary",
+                                   use_container_width=True):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                return
+    except Exception:
+        pass
+
     # ── 2. הצגת חודשים קיימים בפרויקט ──
     existing_months = list_available_months(project_id)
     if existing_months:
@@ -225,9 +247,33 @@ def render_import_page(projects: list[dict]) -> None:
     rebuild = st.checkbox("בנה מחדש את מאסטר הנתונים אחרי השמירה (מומלץ)",
                           value=True, key="run_build")
 
+    # ── בדיקת כפילויות SHA-256 ──
+    import hashlib
+    duplicates_warnings = []
+    for slot_key, up in uploaded.items():
+        if up is None:
+            continue
+        data = up.getbuffer().tobytes()
+        new_hash = hashlib.sha256(data).hexdigest()
+        old = _existing_file_for_slot(month_dir, SLOTS[slot_key]["keywords"])
+        if old:
+            try:
+                old_hash = hashlib.sha256(old.read_bytes()).hexdigest()
+                if old_hash == new_hash:
+                    duplicates_warnings.append(
+                        f"⚠️ הקובץ '{up.name}' זהה בייטים-לבייטים ל-'{old.name}' "
+                        f"שכבר נטען. לא צריך לטעון שוב."
+                    )
+            except Exception:
+                pass
+    if duplicates_warnings:
+        for w in duplicates_warnings:
+            st.warning(w)
+
     if st.button(save_label, type="primary", disabled=not any_uploaded,
                  use_container_width=True):
         saved = []
+        from core import db
         for slot_key, up in uploaded.items():
             if up is None:
                 continue
@@ -241,6 +287,15 @@ def render_import_page(projects: list[dict]) -> None:
             with open(target, "wb") as fh:
                 fh.write(up.getbuffer())
             saved.append(f"{slot['label']}: {up.name}")
+            # רישום ל-audit
+            try:
+                db.log_event("file_import", {
+                    "project_id": project_id, "month": month,
+                    "file_type": slot_key, "file_name": up.name,
+                    "size_bytes": len(up.getbuffer()),
+                })
+            except Exception:
+                pass
         st.success("נשמר:\n" + "\n".join(f"  • {s}" for s in saved))
 
         if rebuild:

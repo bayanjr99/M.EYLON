@@ -93,8 +93,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     if render_detail_view(df_master, project_meta):
         return
 
-    # ── Back button + Edit button + דוח מנהלים (שורה אחת מעל הכותרת) ──
-    back_col, edit_col, report_col, _spacer = st.columns([1, 2, 2, 3])
+    # ── Back / Edit / דוח מנהלים / דוח לבנק (שורה אחת מעל הכותרת) ──
+    back_col, edit_col, report_col, bank_col, _spacer = st.columns([1, 2, 2, 2, 1])
     with back_col:
         if st.button("← חזרה לרשימה", key="back_to_list", use_container_width=True):
             st.session_state.pop("selected_project_id", None)
@@ -124,6 +124,22 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
             )
         except Exception as _exc:
             st.caption(f"שגיאה בהפקת דוח: {_exc}")
+    with bank_col:
+        try:
+            from core.bank_report import export_bank_report
+            bank_bytes = export_bank_report(project_id, df_master)
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "🏦 דוח לבנק",
+                data=bank_bytes,
+                file_name=f"bank_report_{project_id}_{ts}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="bank_report_dl",
+                help="דוח מקצועי לשליחה לבנק / משקיע / רואה חשבון.",
+            )
+        except Exception as _exc:
+            st.caption(f"שגיאה בדוח בנק: {_exc}")
 
     # ── Header card ─────────────────────────────────────────
     st.markdown(
@@ -256,6 +272,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
             _tab_tasks(project_meta)
         elif admin_view == "documents":
             _tab_documents(project_meta)
+        elif admin_view == "analytics":
+            _tab_analytics(df_master, project_meta)
         return
 
     # ── HEADER: 5 כפתורי ניהול (לא טאבים) ──
@@ -274,7 +292,7 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     except Exception:
         docs_label = "📎 מסמכים"
 
-    adm1, adm2, adm3, adm4, adm5, _ = st.columns([1, 1, 1, 1, 1, 2])
+    adm1, adm2, adm3, adm4, adm5, adm6, _ = st.columns([1, 1, 1, 1, 1, 1, 1])
     with adm1:
         if st.button("📁 ייבוא נתונים", key="admin_import",
                        use_container_width=True):
@@ -299,6 +317,11 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         if st.button(docs_label, key="admin_documents",
                        use_container_width=True):
             st.session_state["admin_view"] = "documents"
+            st.rerun()
+    with adm6:
+        if st.button("📊 רווחיות ותחזית", key="admin_analytics",
+                       use_container_width=True):
+            st.session_state["admin_view"] = "analytics"
             st.rerun()
 
     # ── 5 טאבים ראשיים בלבד ──
@@ -1620,6 +1643,112 @@ def _tab_documents(project_meta: dict) -> None:
                     st.rerun()
 
 
+def _tab_analytics(df_master: pd.DataFrame, project_meta: dict) -> None:
+    """טאב רווחיות ותחזית: 3 sub-tabs (כלי / ספק / תחזית)."""
+    from core.profitability import (
+        tool_profitability, supplier_profitability, project_forecast,
+    )
+    project_id = project_meta["project_id"]
+    breadcrumb("ניהול", "רווחיות ותחזית")
+
+    sub = st.tabs(["🚜 רווחיות לפי כלי", "🏪 רווחיות לפי ספק",
+                    "🔮 תחזית סוף פרויקט"])
+
+    # ── רווחיות לפי כלי ──
+    with sub[0]:
+        sec("רווחיות לפי כלי")
+        tools_df = tool_profitability(df_master, project_id)
+        if tools_df.empty:
+            ins("blue", "ℹ️", "אין נתוני כלים",
+                "צריך נתוני שעות עבודה / תדלוקים / שיוכים ידניים לכלים.")
+        else:
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("כלים בניתוח", format_number(len(tools_df)))
+            k2.metric("סה\"כ עלות סולר", format_currency(tools_df["total_fuel_cost"].sum()))
+            k3.metric("סה\"כ שעות", format_number(tools_df["total_hours"].sum()))
+            k4.metric("חריגים", format_number((tools_df["anomalies"] != "✓").sum()))
+            disp = tools_df.rename(columns={
+                "license_num":     "מס' רישוי",
+                "tool_name":       "שם כלי",
+                "total_fuel_cost": "עלות סולר (₪)",
+                "total_liters":    "ליטרים",
+                "total_hours":     "שעות עבודה",
+                "n_months_active": "חודשים פעילים",
+                "lph":             "ל'/ש'",
+                "cost_per_hour":   "₪/שעה",
+                "manual_cost":     "₪ משויך ידנית",
+                "anomalies":       "אזהרות",
+            })
+            display_dataframe(disp)
+
+    # ── רווחיות לפי ספק ──
+    with sub[1]:
+        sec("ניתוח ספקים")
+        sup_df = supplier_profitability(df_master, project_id)
+        if sup_df.empty:
+            ins("blue", "ℹ️", "אין נתוני ספקים", "")
+        else:
+            k1, k2, k3, k4 = st.columns(4)
+            n_anom = int(sup_df["is_anomaly"].sum())
+            n_new = int(sup_df["is_new"].sum())
+            k1.metric("ספקים פעילים", format_number(len(sup_df)))
+            k2.metric("סה\"כ הוצאה", format_currency(sup_df["total_spend"].sum()))
+            k3.metric("ספקים חריגים", format_number(n_anom))
+            k4.metric("ספקים חדשים", format_number(n_new))
+            disp = sup_df.copy()
+            disp["סטטוס"] = disp.apply(
+                lambda r: "🆕 חדש" if r["is_new"]
+                else ("🚨 חריג" if r["is_anomaly"] else "✓"),
+                axis=1,
+            )
+            disp = disp.drop(columns=["is_anomaly", "is_new"]).rename(columns={
+                "supplier":          "ספק",
+                "total_spend":       "סה\"כ הוצאה (₪)",
+                "n_invoices":        "חשבוניות",
+                "n_months_active":   "חודשים פעילים",
+                "monthly_avg":       "ממוצע חודשי",
+                "last_month_amount": "החודש האחרון",
+            })
+            display_dataframe(disp)
+
+    # ── תחזית סוף פרויקט ──
+    with sub[2]:
+        sec("תחזית סוף פרויקט", meta="מבוסס על ממוצע חודשי × 6 חודשים קדימה")
+        months_ahead = st.slider("חודשים קדימה לתחזית", 1, 24, 6,
+                                    key="forecast_months")
+        forecast = project_forecast(df_master, project_id,
+                                       months_ahead=months_ahead)
+        if forecast["n_months_history"] == 0:
+            ins("blue", "ℹ️", "אין נתונים היסטוריים", forecast["conclusion"])
+            return
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("חודשי היסטוריה", format_number(forecast["n_months_history"]))
+        k2.metric("הכנסות צפויות",
+                    format_currency(forecast["projected_revenue"]))
+        k3.metric("הוצאות צפויות",
+                    format_currency(forecast["projected_expenses"]))
+        k4.metric("רווח צפוי",
+                    format_currency(forecast["projected_profit"]),
+                    delta=format_percent(forecast["projected_profit_pct"],
+                                            already_pct=True))
+
+        # מסקנה
+        color_map = {"low": "green", "medium": "amber",
+                     "high": "red", "unknown": "blue"}
+        icon_map = {"low": "✓", "medium": "⚠️",
+                    "high": "🚨", "unknown": "ℹ️"}
+        c = color_map.get(forecast["risk_level"], "blue")
+        i = icon_map.get(forecast["risk_level"], "ℹ️")
+        ins(c, i, "מסקנה", forecast["conclusion"])
+
+        # פירוט
+        st.caption(
+            f"ממוצע חודשי: הכנסות {format_currency(forecast['avg_monthly_revenue'])}, "
+            f"הוצאות {format_currency(forecast['avg_monthly_expenses'])}"
+        )
+
+
 def _tab_tasks(project_meta: dict) -> None:
     """טאב משימות לטיפול."""
     from core.project_tasks import (
@@ -1748,9 +1877,55 @@ def _tab_tasks(project_meta: dict) -> None:
 
 def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     """דוחות איכות נתונים - מה חסר/חשוד/לא מסווג."""
-    from core import categorizer, storage
+    from core import categorizer, storage, month_locks
     from pipeline import list_available_months, PROJECTS_ROOT
     project_id = project_meta["project_id"]
+
+    # ── ניהול נעילת חודשים ──
+    sec("🔒 נעילת חודשים", meta="סגירת חודש נועלת את הנתונים מפני שינויים")
+    months_avail = list_available_months(project_id)
+    locked = month_locks.list_locks(project_id)
+    locked_set = set(locked["month"].tolist()) if not locked.empty else set()
+
+    mc1, mc2, mc3 = st.columns([2, 1, 1])
+    with mc1:
+        target_month = st.selectbox(
+            "חודש לניהול נעילה",
+            ["— בחר חודש —"] + list(months_avail),
+            key=f"lock_month_pick_{project_id}",
+        )
+    if target_month and target_month != "— בחר חודש —":
+        is_locked = target_month in locked_set
+        with mc2:
+            st.metric("סטטוס", "🔒 נעול" if is_locked else "🔓 פתוח")
+        with mc3:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            if not is_locked:
+                if st.button("🔒 סגור חודש", key=f"lock_btn_{target_month}",
+                               use_container_width=True):
+                    ok, msg = month_locks.lock_month(
+                        project_id, target_month,
+                        locked_by="user",
+                        notes=f"נסגר ידנית דרך מסך QA",
+                    )
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            else:
+                if st.button("🔓 פתח חודש מחדש",
+                               key=f"unlock_btn_{target_month}",
+                               use_container_width=True):
+                    ok, msg = month_locks.unlock_month(
+                        project_id, target_month, reason="פתיחה ידנית",
+                    )
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+    if not locked.empty:
+        st.caption(f"חודשים נעולים: {', '.join(sorted(locked_set))}")
+    st.markdown("---")
 
     # ── חריגות בטיפול (persisted) ──
     sec("חריגות במעקב", meta="מטבלת בעיות איכות נתונים")
@@ -2285,6 +2460,35 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
                     })
                     st.caption(f"{len(outliers)} ספקים חריגים (החציון: ₪{med:,.0f}).")
                     display_dataframe(rows, use_container_width=True, hide_index=True)
+
+    # ── היסטוריית audit ──
+    st.markdown("---")
+    sec("📜 היסטוריית פעולות (Audit Log)",
+        meta="50 הפעולות האחרונות במערכת")
+    try:
+        from core import db
+        recent = db.recent_events(50)
+        if recent.empty:
+            st.caption("אין רישומי audit עדיין.")
+        else:
+            # סינון לפעולות שקשורות לפרויקט הנוכחי
+            mask = recent["details"].astype(str).str.contains(
+                project_id, na=False,
+            )
+            project_only = recent[mask]
+            view_choice = st.radio(
+                "תצוגה", ["רק הפרויקט הנוכחי", "כל המערכת"],
+                horizontal=True, key=f"audit_view_{project_id}",
+            )
+            audit_to_show = project_only if view_choice == "רק הפרויקט הנוכחי" else recent
+            if audit_to_show.empty:
+                st.caption("אין רישומים לפרויקט זה.")
+            else:
+                disp = audit_to_show[["timestamp", "event", "details"]].copy()
+                disp.columns = ["תאריך", "פעולה", "פרטים"]
+                display_dataframe(disp.head(50))
+    except Exception as e:
+        st.caption(f"audit log לא זמין: {e}")
 
 
 # ════════════════════════════════════════════════════════════
