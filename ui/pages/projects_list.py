@@ -565,12 +565,8 @@ def _render_project_card(proj: dict, df_master: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
-    # כפתורי Streamlit נפרדים (לא ניתן לשים בתוך HTML)
+    # כפתור Streamlit (לא ניתן לשים בתוך HTML)
     if st.button("פתח פרויקט ←", key=f"open_{project_id}",
                    use_container_width=True, type="primary"):
         st.session_state["selected_project_id"] = project_id
-        st.rerun()
-    if st.button("✏️ ערוך פרויקט", key=f"edit_{project_id}",
-                   use_container_width=True):
-        st.session_state["edit_project_id"] = project_id
         st.rerun()
