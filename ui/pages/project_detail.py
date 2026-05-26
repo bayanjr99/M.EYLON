@@ -177,13 +177,47 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         )
         return
 
-    summary = project_aggregator.project_summary(df_master, project_id)
+    # ── פילטר חודש אחיד לכל המסכים ──
+    # מקור אמת יחיד לתקופה — כל ה-KPI, גרפים, טבלאות וטאבים
+    # מחושבים מאותו filtered_df.
+    available_months = sorted(df["month"].dropna().unique()) \
+        if "month" in df.columns else []
+    if available_months:
+        from ui.formatters import format_number
+        mc1, _ = st.columns([2, 5])
+        with mc1:
+            month_options = ["כל החודשים"] + list(available_months)
+            month_choice = st.selectbox(
+                f"📅 פילטר חודש ({format_number(len(available_months))} חודשים זמינים)",
+                month_options,
+                key=f"month_filter_{project_id}",
+                help="הבחירה משפיעה על כל הטאבים, ה-KPIs, ההתראות והדוחות "
+                     "בדף הפרויקט.",
+            )
+        if month_choice != "כל החודשים":
+            df = df[df["month"] == month_choice]
+            # df_master_scoped משמש ל-project_summary ולקריאות שמשתמשות
+            # עדיין ב-df_master השלם פנימית
+            df_master_scoped = df_master[
+                (df_master["project_id"] == project_id) &
+                (df_master["month"] == month_choice)
+            ] if not df_master.empty else df_master
+        else:
+            df_master_scoped = df_master
+    else:
+        month_choice = "כל החודשים"
+        df_master_scoped = df_master
+
+    summary = project_aggregator.project_summary(df_master_scoped, project_id)
 
     # ── Period header: scope + months + tx count ──
     months_str = ", ".join(summary["months"]) if summary["months"] else "—"
+    scope_text = (f"📅 <b>חודש {month_choice}</b>"
+                  if month_choice != "כל החודשים"
+                  else f'📅 <b>{len(summary["months"])} חודשים</b>: {months_str}')
     period_html = (
         f'<div class="period-header">'
-        f'<span>📅 <b>{len(summary["months"])} חודשים</b>: {months_str}'
+        f'<span>{scope_text}'
         f'<span class="sep">·</span> {summary["num_transactions"]:,} תנועות'
         f'<span class="sep">·</span> {summary["num_suppliers"]} ספקים</span>'
         f'<span class="tag">תמונת פרויקט</span>'
