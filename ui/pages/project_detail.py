@@ -213,10 +213,29 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
             render_budget_tab(df, project_meta)
         elif admin_view == "qa":
             _tab_qa(df, project_meta)
+        elif admin_view == "tasks":
+            _tab_tasks(project_meta)
+        elif admin_view == "documents":
+            _tab_documents(project_meta)
         return
 
-    # ── HEADER: 3 כפתורי ניהול (לא טאבים) ──
-    adm1, adm2, adm3, _ = st.columns([1, 1, 1, 4])
+    # ── HEADER: 5 כפתורי ניהול (לא טאבים) ──
+    # מוסיף ספירת משימות פתוחות + מסמכים
+    try:
+        from core.project_tasks import count_tasks
+        tcounts = count_tasks(project_id)
+        n_open = tcounts.get("open", 0) + tcounts.get("in_progress", 0)
+        tasks_label = f"📋 משימות ({n_open})" if n_open else "📋 משימות"
+    except Exception:
+        tasks_label = "📋 משימות"
+    try:
+        from core.project_documents import count_documents
+        n_docs = count_documents(project_id)
+        docs_label = f"📎 מסמכים ({n_docs})" if n_docs else "📎 מסמכים"
+    except Exception:
+        docs_label = "📎 מסמכים"
+
+    adm1, adm2, adm3, adm4, adm5, _ = st.columns([1, 1, 1, 1, 1, 2])
     with adm1:
         if st.button("📁 ייבוא נתונים", key="admin_import",
                        use_container_width=True):
@@ -231,6 +250,16 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         if st.button("🔍 בדיקות וחריגות", key="admin_qa",
                        use_container_width=True):
             st.session_state["admin_view"] = "qa"
+            st.rerun()
+    with adm4:
+        if st.button(tasks_label, key="admin_tasks",
+                       use_container_width=True):
+            st.session_state["admin_view"] = "tasks"
+            st.rerun()
+    with adm5:
+        if st.button(docs_label, key="admin_documents",
+                       use_container_width=True):
+            st.session_state["admin_view"] = "documents"
             st.rerun()
 
     # ── 5 טאבים ראשיים בלבד ──
@@ -331,7 +360,50 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
+def _render_smart_alerts(df: pd.DataFrame, project_id: str) -> None:
+    """מציג התראות חכמות בראש מסך הסקירה.
+
+    מתקפל בתוך expander אם יש מעל 3 התראות, אחרת מציג ישירות.
+    """
+    from core.smart_alerts import collect_alerts, SEVERITY_COLOR
+    alerts = collect_alerts(df, project_id)
+    if not alerts:
+        ins("green", "✓", "אין התראות פתוחות",
+            "המערכת לא זיהתה בעיות אוטומטיות בנתוני הפרויקט.")
+        return
+
+    high = [a for a in alerts if a["severity"] == "high"]
+    medium = [a for a in alerts if a["severity"] == "medium"]
+    low_info = [a for a in alerts if a["severity"] in ("low", "info")]
+
+    sec("🚨 התראות חכמות",
+        meta=f"{len(high)} גבוהות · {len(medium)} בינוניות · "
+             f"{len(low_info)} נמוכות/מידע")
+
+    # התראות גבוהות תמיד מוצגות
+    for a in high:
+        ins(SEVERITY_COLOR[a["severity"]], "🚨", a["title"], a["body"])
+
+    # בינוניות בקיפול
+    if medium:
+        with st.expander(f"⚠️ {len(medium)} התראות בינוניות", expanded=not high):
+            for a in medium:
+                ins(SEVERITY_COLOR[a["severity"]], "⚠️", a["title"], a["body"])
+
+    # נמוכות/מידע בקיפול נפרד
+    if low_info:
+        with st.expander(f"ℹ️ {len(low_info)} התראות נמוכות / מידע",
+                           expanded=False):
+            for a in low_info:
+                ins(SEVERITY_COLOR[a["severity"]], "ℹ️", a["title"], a["body"])
+
+
 def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
+    # ── התראות חכמות בראש המסך ──
+    project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
+    if project_id:
+        _render_smart_alerts(df, project_id)
+
     kpis_fin = [
         kpi_block("הכנסות", _fmt_money(summary["revenue"]),
                   accent="green", icon="ti-cash-banknote"),
@@ -1253,6 +1325,275 @@ def _collect_fuel_inventory(project_id: str) -> pd.DataFrame:
 
 
 # ─── Tab 9: בדיקות וחריגות (QA) ─────────────────────────────
+def _tab_documents(project_meta: dict) -> None:
+    """טאב מסמכים — העלאה, רשימה, סינון, הורדה."""
+    from core.project_documents import (
+        save_document, list_documents, get_document_bytes, delete_document,
+        DOC_TYPES, DOC_TYPE_HE, guess_doc_type,
+    )
+    project_id = project_meta["project_id"]
+    breadcrumb("ניהול", "מסמכי הפרויקט")
+
+    docs = list_documents(project_id)
+
+    # ── KPIs ──
+    c1, c2, c3 = st.columns(3)
+    c1.metric("סה\"כ מסמכים", format_number(len(docs)))
+    if not docs.empty:
+        total_size_mb = docs["file_size"].sum() / (1024 * 1024)
+        c2.metric("נפח כולל", f"{total_size_mb:.1f} MB")
+        c3.metric("ספקים שונים",
+                  format_number(docs["supplier"].astype(str)
+                                  .replace("", pd.NA).dropna().nunique()))
+
+    # ── טופס העלאה ──
+    with st.expander("📤 העלה מסמך חדש", expanded=docs.empty):
+        with st.form(f"new_doc_form_{project_id}", clear_on_submit=True):
+            up = st.file_uploader(
+                "בחר קובץ (PDF / Excel / תמונה / Word / כל סוג אחר)",
+                key=f"doc_upl_{project_id}",
+            )
+            d1, d2 = st.columns(2)
+            with d1:
+                doc_type_he = st.selectbox(
+                    "סוג מסמך",
+                    [DOC_TYPE_HE[t] for t in DOC_TYPES],
+                )
+                month = st.text_input("חודש (MM-YYYY) — אופציונלי",
+                                        placeholder="05-2026")
+            with d2:
+                supplier = st.text_input("ספק — אופציונלי")
+                license_str = st.text_input("מס' רישוי כלי — אופציונלי")
+            client = st.text_input("לקוח — אופציונלי")
+            notes = st.text_area("הערות", placeholder="פרטים על המסמך")
+            allow_dup = st.checkbox("שמור גם אם קובץ זהה כבר קיים", value=False)
+
+            if st.form_submit_button("💾 שמור מסמך", type="primary",
+                                       use_container_width=True):
+                if up is None:
+                    st.error("בחר קובץ להעלאה")
+                else:
+                    data = up.getbuffer().tobytes()
+                    dtype_code = next((k for k, v in DOC_TYPE_HE.items()
+                                          if v == doc_type_he),
+                                          guess_doc_type(up.name))
+                    try:
+                        lic = int(license_str.strip()) if license_str.strip() else None
+                    except ValueError:
+                        lic = None
+                    ok, msg, _ = save_document(
+                        project_id, up.name, data,
+                        doc_type=dtype_code, month=month.strip(),
+                        supplier=supplier.strip(), client=client.strip(),
+                        license_num=lic, notes=notes.strip(),
+                        allow_duplicate=allow_dup,
+                    )
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning(f"⚠️ {msg} — סמן את התיבה למעלה כדי לשמור בכל זאת.")
+
+    if docs.empty:
+        st.caption("אין מסמכים במערכת. השתמש בטופס למעלה כדי להעלות.")
+        return
+
+    # ── פילטרים ──
+    sec("מסמכים שמורים")
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        type_filter = st.selectbox(
+            "סוג",
+            ["הכל"] + [DOC_TYPE_HE[t] for t in DOC_TYPES],
+            key=f"docs_type_{project_id}",
+        )
+    with f2:
+        months_avail = sorted(docs["month"].dropna().replace("", pd.NA).dropna().unique())
+        month_filter = st.selectbox("חודש", ["הכל"] + months_avail,
+                                       key=f"docs_month_{project_id}")
+    with f3:
+        sups_avail = sorted(docs["supplier"].dropna().replace("", pd.NA).dropna().unique())
+        sup_filter = st.selectbox("ספק", ["הכל"] + list(sups_avail),
+                                     key=f"docs_sup_{project_id}")
+
+    f_docs = docs.copy()
+    if type_filter != "הכל":
+        target_type = next((k for k, v in DOC_TYPE_HE.items() if v == type_filter), None)
+        if target_type:
+            f_docs = f_docs[f_docs["doc_type"] == target_type]
+    if month_filter != "הכל":
+        f_docs = f_docs[f_docs["month"] == month_filter]
+    if sup_filter != "הכל":
+        f_docs = f_docs[f_docs["supplier"] == sup_filter]
+
+    if f_docs.empty:
+        st.caption("אין מסמכים בסינון הנבחר.")
+        return
+
+    # ── תצוגה: כרטיס לכל מסמך ──
+    for _, doc in f_docs.iterrows():
+        dtype_he = DOC_TYPE_HE.get(doc["doc_type"], doc["doc_type"])
+        size_kb = doc["file_size"] / 1024
+        label_parts = [doc["filename"]]
+        if doc.get("month"):
+            label_parts.append(f"📅 {doc['month']}")
+        if doc.get("supplier"):
+            label_parts.append(f"🏪 {doc['supplier']}")
+        if doc.get("license_num"):
+            label_parts.append(f"🚜 {int(doc['license_num'])}")
+        label = f"📎 {dtype_he} · " + " · ".join(label_parts) + f" · {size_kb:,.0f} KB"
+
+        with st.expander(label, expanded=False):
+            if doc.get("notes"):
+                st.write(doc["notes"])
+            st.caption(f"הועלה: {doc['uploaded_at']}")
+            cols = st.columns(3)
+            with cols[0]:
+                # כפתור הורדה
+                payload = get_document_bytes(int(doc["id"]))
+                if payload:
+                    file_bytes, fname = payload
+                    st.download_button(
+                        "⬇️ הורד",
+                        data=file_bytes, file_name=fname,
+                        key=f"doc_dl_{doc['id']}",
+                        use_container_width=True,
+                    )
+            with cols[2]:
+                if st.button("🗑 מחק", key=f"doc_del_{doc['id']}",
+                               use_container_width=True):
+                    delete_document(int(doc["id"]))
+                    st.success("המסמך נמחק")
+                    st.rerun()
+
+
+def _tab_tasks(project_meta: dict) -> None:
+    """טאב משימות לטיפול."""
+    from core.project_tasks import (
+        create_task, list_tasks, update_task_status, update_task,
+        delete_task, count_tasks, STATUS_HE, PRIORITY_HE,
+        VALID_STATUSES, VALID_PRIORITIES,
+    )
+    project_id = project_meta["project_id"]
+    breadcrumb("ניהול", "משימות לטיפול")
+
+    counts = count_tasks(project_id)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("פתוחות", str(counts.get("open", 0)))
+    c2.metric("בטיפול", str(counts.get("in_progress", 0)))
+    c3.metric("נסגרו", str(counts.get("done", 0)))
+    c4.metric("בוטלו", str(counts.get("cancelled", 0)))
+
+    # ── טופס יצירת משימה ──
+    with st.expander("➕ משימה חדשה", expanded=False):
+        with st.form(f"new_task_form_{project_id}", clear_on_submit=True):
+            t1, t2 = st.columns(2)
+            with t1:
+                title = st.text_input("כותרת *", placeholder="לדוגמה: לבדוק חיוב כפול אצל ספק X")
+                assignee = st.text_input("אחראי", placeholder="שם / תפקיד")
+            with t2:
+                priority_he = st.selectbox(
+                    "עדיפות", [PRIORITY_HE[p] for p in VALID_PRIORITIES],
+                    index=1,
+                )
+                from datetime import date as _date
+                due_date = st.date_input("תאריך יעד (אופציונלי)", value=None,
+                                            format="DD/MM/YYYY")
+            description = st.text_area("תיאור", placeholder="פירוט מה צריך לעשות")
+            if st.form_submit_button("💾 צור משימה", type="primary",
+                                       use_container_width=True):
+                if not title.strip():
+                    st.error("כותרת חובה")
+                else:
+                    prio_code = next((k for k, v in PRIORITY_HE.items()
+                                       if v == priority_he), "medium")
+                    create_task(
+                        project_id, title=title.strip(),
+                        description=description.strip(),
+                        assignee=assignee.strip(),
+                        due_date=due_date.strftime("%Y-%m-%d") if due_date else "",
+                        priority=prio_code,
+                    )
+                    st.success("✅ משימה נוצרה")
+                    st.cache_data.clear()
+                    st.rerun()
+
+    # ── פילטר ורשימה ──
+    filter_he = st.radio(
+        "סינון",
+        ["פתוחות + בטיפול", "פתוחות", "בטיפול", "נסגרו", "בוטלו", "הכל"],
+        horizontal=True, key=f"tasks_filter_{project_id}",
+    )
+    filter_map = {
+        "פתוחות + בטיפול": "open_active",
+        "פתוחות": "open", "בטיפול": "in_progress",
+        "נסגרו": "done", "בוטלו": "cancelled", "הכל": "all",
+    }
+    tasks = list_tasks(project_id, status=filter_map[filter_he])
+
+    if tasks.empty:
+        st.caption("אין משימות בסינון הנבחר. השתמש בטופס למעלה כדי להוסיף משימה.")
+        return
+
+    # תצוגה של כל משימה כ-expander
+    for _, t in tasks.iterrows():
+        sev_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(t["priority"], "⚪")
+        st_emoji = {"open": "🆕", "in_progress": "⏳",
+                     "done": "✅", "cancelled": "🚫"}.get(t["status"], "·")
+        prio_he = PRIORITY_HE.get(t["priority"], t["priority"])
+        st_he = STATUS_HE.get(t["status"], t["status"])
+        label = f"{sev_emoji} {st_emoji} {t['title']} · {prio_he} · {st_he}"
+        if t.get("assignee"):
+            label += f" · 👤 {t['assignee']}"
+        if t.get("due_date"):
+            label += f" · 📅 {t['due_date']}"
+
+        with st.expander(label, expanded=False):
+            if t.get("description"):
+                st.write(t["description"])
+            if t.get("related_alert"):
+                st.caption(f"קשור להתראה: {t['related_alert']}")
+            if t.get("notes"):
+                st.caption(f"הערות: {t['notes']}")
+            st.caption(f"נוצר: {t.get('created_at', '—')}")
+
+            # פעולות
+            cols = st.columns(4)
+            current_status = t["status"]
+            with cols[0]:
+                if current_status == "open" and st.button(
+                    "▶️ התחל טיפול", key=f"tstart_{t['id']}",
+                    use_container_width=True,
+                ):
+                    update_task_status(int(t["id"]), "in_progress")
+                    st.rerun()
+                elif current_status == "in_progress" and st.button(
+                    "✅ סגור", key=f"tdone_{t['id']}",
+                    use_container_width=True, type="primary",
+                ):
+                    update_task_status(int(t["id"]), "done")
+                    st.rerun()
+                elif current_status in ("done", "cancelled") and st.button(
+                    "🔄 פתח מחדש", key=f"treopen_{t['id']}",
+                    use_container_width=True,
+                ):
+                    update_task_status(int(t["id"]), "open")
+                    st.rerun()
+            with cols[1]:
+                if current_status not in ("cancelled", "done") and st.button(
+                    "🚫 בטל", key=f"tcancel_{t['id']}",
+                    use_container_width=True,
+                ):
+                    update_task_status(int(t["id"]), "cancelled")
+                    st.rerun()
+            with cols[3]:
+                if st.button("🗑 מחק", key=f"tdel_{t['id']}",
+                               use_container_width=True):
+                    delete_task(int(t["id"]))
+                    st.rerun()
+
+
 def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     """דוחות איכות נתונים - מה חסר/חשוד/לא מסווג."""
     from core import categorizer, storage
