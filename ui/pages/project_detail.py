@@ -3606,28 +3606,116 @@ _FUEL_TRACKER_COL_ORDER = [
     "status", "notes",
 ]
 
+# מחרוזת לתצוגה במקום NaN/None
+_DASH = "—"
+
+
+def _is_bad_meter_status(status) -> bool:
+    """True אם הסטטוס מצביע על קריאת מונה לא תקינה.
+
+    במקרים כאלה לא רוצים להציג ליטר/שעה (אפילו לא 0.0) כי הוא נובע
+    מקריאת מונה פגומה ולא מצריכה אמיתית.
+    """
+    if pd.isna(status):
+        return False
+    s = str(status)
+    return any(
+        marker in s
+        for marker in (
+            "🔴",                        # כל החריגות האדומות
+            "ספירת שעות שלילית",          # מונה חזר אחורה
+            "לא ניתן לחשב",               # אין delta תקין
+            "קריאת מונה",                 # קפיצה גדולה / לא תקינה
+            "אין נתון ליטרים",
+        )
+    )
+
+
+def _fmt_num(v, decimals: int = 0) -> str:
+    """ממיר מספר ל-string מפורמט. NaN/None → '—'."""
+    if v is None or pd.isna(v):
+        return _DASH
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return _DASH
+    if decimals == 0:
+        return f"{int(round(f)):,}"
+    return f"{f:,.{decimals}f}"
+
+
+def _fmt_text(v) -> str:
+    """ממיר טקסט ל-string. None/NaN/'nan'/'NaT'/'' → '—'."""
+    if v is None:
+        return _DASH
+    try:
+        if pd.isna(v):
+            return _DASH
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    if s == "" or s.lower() in ("nan", "none", "nat", "<na>"):
+        return _DASH
+    return s
+
 
 def _format_fuel_tracker_for_display(df: pd.DataFrame) -> pd.DataFrame:
     """ממיר DataFrame של fuel_tracker לטבלת תצוגה.
 
-    - בוחר רק את העמודות הרלוונטיות
-    - שם עמודות בעברית
-    - שורות עם work_hours לא תקין → ליטר/שעה ריק (לא 0.0 מטעה)
+    - מסנן לעמודות הרלוונטיות, שם עברי
+    - שורות עם קריאת מונה לא תקינה → ליטר/שעה ריק (לא 0.0 מטעה)
+    - **השאר נומרי** — ה-cast ל-strings קורה ב-_finalize_display_strings
+      אחרי append של שורת סה״כ.
     """
     if df.empty:
         return df
     out = df.copy()
-    # תאריך → datetime (לפורמט DateColumn ב-st.dataframe)
     if "date" in out.columns:
         out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    # ודא שכל עמודות הסכמה קיימות
     for c in _FUEL_TRACKER_COL_ORDER:
         if c not in out.columns:
             out[c] = pd.NA
-    # סנן רק לעמודות הרלוונטיות בסדר הנכון
+
+    # blank lph_display לכל שורה עם status שמצביע על מונה פגום
+    if "status" in out.columns and "lph_display" in out.columns:
+        bad_mask = out["status"].apply(_is_bad_meter_status)
+        out.loc[bad_mask, "lph_display"] = pd.NA
+
     out = out[_FUEL_TRACKER_COL_ORDER].copy()
-    # שמות עבריים
     out.columns = [_FUEL_TRACKER_COL_HEB.get(c, c) for c in _FUEL_TRACKER_COL_ORDER]
+    return out
+
+
+# מיפוי עמודות תצוגה → פורמט (decimals; -1 = text-only)
+_DISPLAY_FMT = {
+    "כמות סולר":           1,
+    "קריאת שעות מנוע":     0,
+    "שעות עבודה מחושבות":  1,
+    "ליטר/שעה":            2,
+    "שעות מנוע":           0,
+    "ליטרים":              1,
+}
+
+
+def _finalize_display_strings(disp: pd.DataFrame) -> pd.DataFrame:
+    """שלב סופי לפני display_dataframe — ממיר כל תא ל-string תצוגה.
+
+    NaN/None/'' → '—' באופן עקבי בכל העמודות (נומריות וטקסטואליות).
+    מבוצע אחרי append של שורת סה״כ כדי לא לפגוע ב-SUM.
+    """
+    if disp.empty:
+        return disp
+    out = disp.copy()
+    for col in out.columns:
+        if col in _DISPLAY_FMT:
+            decimals = _DISPLAY_FMT[col]
+            out[col] = out[col].apply(lambda v: _fmt_num(v, decimals=decimals))
+        elif col == "תאריך":
+            # תאריך — נשמור כ-datetime כדי שה-DateColumn יציג בפורמט נכון
+            # רק NaT → "—"
+            continue
+        else:
+            out[col] = out[col].apply(_fmt_text)
     return out
 
 
@@ -3656,13 +3744,14 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
         if has_solar:
             st.metric("מדוח תדלוקים בפועל (ל')", format_number(total_solar_l))
         else:
+            # spec: אין קובץ דוח תדלוקים → להציג "לא נטען" (לא 0)
             st.markdown(
-                '<div style="background:#FEF3C7;border:1px solid #FCD34D;'
+                '<div style="background:#F8FAFC;border:1px solid #CBD5E1;'
                 'border-radius:8px;padding:10px 14px;text-align:center">'
-                '<div style="font-size:11px;color:#92400E;font-weight:600">'
-                'מדוח תדלוקים בפועל</div>'
-                '<div style="font-size:14px;color:#78350F;margin-top:4px">'
-                '⚠ לא הועלה דוח תדלוקים</div>'
+                '<div style="font-size:11px;color:#64748B;font-weight:600">'
+                'מדוח תדלוקים בפועל (ל\')</div>'
+                '<div style="font-size:20px;font-weight:700;color:#475569;'
+                'margin-top:6px">לא נטען</div>'
                 '</div>',
                 unsafe_allow_html=True,
             )
@@ -3719,6 +3808,8 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
             meta=f"{len(tracker):,} שורות · מקובץ 'מעקב סולר וטיפולים — כלי צמה'")
         disp = _format_fuel_tracker_for_display(tracker.sort_values("date"))
         disp = _append_fuel_total_row(disp)
+        # spec: NaN/None → "—" עקבי בכל העמודות
+        disp = _finalize_display_strings(disp)
         display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── טבלת חריגות (spec 15) ──
@@ -3739,6 +3830,7 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                 "<br>".join(f"• <code>{s}</code>: {c}" for s, c in anom_summary.items()),
             )
             disp_anom = _format_fuel_tracker_for_display(anomalies.sort_values("date"))
+            disp_anom = _finalize_display_strings(disp_anom)
             display_dataframe(disp_anom, use_container_width=True, hide_index=True)
         else:
             ins("green", "✓",
@@ -3755,6 +3847,7 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                "liters": "ליטרים", "engine_hours": "קריאת שעות מנוע"}
         disp.columns = [heb.get(c, c) for c in cols]
         disp = _append_fuel_total_row(disp)
+        disp = _finalize_display_strings(disp)
         display_dataframe(disp, use_container_width=True, hide_index=True)
 
     # ── אם אין שום נתון ──
