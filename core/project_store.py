@@ -38,7 +38,7 @@ PROJECTS_DIR = DATA_ROOT / "projects"
 DEFAULT_SUB_FOLDERS = ["documents", "uploads", "exports"]
 
 # סטטוסים אפשריים + תרגום לעברית + צבע לתצוגה
-VALID_STATUSES = ["active", "completed", "future", "paused"]
+VALID_STATUSES = ["active", "completed", "future", "paused", "archived"]
 
 # Legacy aliases — סטטוסים ישנים ממופים לחדשים בטעינה
 STATUS_ALIASES = {
@@ -52,6 +52,7 @@ STATUS_HE = {
     "completed": "הסתיים",
     "future":    "עתידי",
     "paused":    "מושהה",
+    "archived":  "ארכיון",
 }
 
 STATUS_COLOR = {
@@ -59,6 +60,7 @@ STATUS_COLOR = {
     "completed": "gray",
     "future":    "blue",
     "paused":    "orange",
+    "archived":  "dark",
 }
 
 

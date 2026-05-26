@@ -1,6 +1,8 @@
 """דף ייעודי לפרויקט בודד - 9 טאבים, כל הנתונים מסוננים לפי project_id."""
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
@@ -86,8 +88,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         _render_edit_project_form(project_id)
         return
 
-    # ── Back button + Edit button (שורה אחת מעל הכותרת) ──────
-    back_col, edit_col, _spacer = st.columns([1, 2, 4])
+    # ── Back button + Edit button + דוח מנהלים (שורה אחת מעל הכותרת) ──
+    back_col, edit_col, report_col, _spacer = st.columns([1, 2, 2, 3])
     with back_col:
         if st.button("← חזרה לרשימה", key="back_to_list", use_container_width=True):
             st.session_state.pop("selected_project_id", None)
@@ -97,6 +99,26 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                        use_container_width=True, type="primary"):
             st.session_state["edit_project_id"] = project_id
             st.rerun()
+    with report_col:
+        # הפק את דוח המנהלים כ-bytes ברגע שלוחצים — הופך לכפתור הורדה.
+        # הדוח קל יחסית (~50KB), חישוב מהיר.
+        try:
+            from core.management_report import export_management_report
+            report_bytes = export_management_report(project_id, df_master,
+                                                       include_transactions=False)
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "📥 דוח מנהלים",
+                data=report_bytes,
+                file_name=f"manager_report_{project_id}_{ts}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="mgr_report_dl",
+                help="קובץ Excel רב-גליונות: סיכום, הכנסות, הוצאות, ספקים, דלק, "
+                     "שעות, חריגות.",
+            )
+        except Exception as _exc:
+            st.caption(f"שגיאה בהפקת דוח: {_exc}")
 
     # ── Header card ─────────────────────────────────────────
     st.markdown(

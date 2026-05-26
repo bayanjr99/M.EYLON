@@ -19,11 +19,12 @@ def _fmt_money(v: float) -> str:
 
 
 def _status_pill_html(status: str) -> str:
-    """תג סטטוס: ירוק=פעיל, אפור=הסתיים, כחול=עתידי, כתום=מושהה."""
+    """תג סטטוס לפי 5 סטטוסים."""
     from core.project_store import validate_project_status, STATUS_HE
     s = validate_project_status(status)
     cls = {"active": "ok", "completed": "neutral",
-           "future": "info", "paused": "warn"}.get(s, "warn")
+           "future": "info", "paused": "warn",
+           "archived": "crit"}.get(s, "warn")
     label = STATUS_HE.get(s, s)
     return f'<span class="status-pill {cls}">{label}</span>'
 
@@ -270,6 +271,42 @@ def _render_delete_project_section(project_id: str) -> None:
             pass
 
     st.markdown("---")
+
+    # ── ארכיון: חלופה רכה למחיקה ──
+    from core.project_store import update_project, get_project_by_id
+    proj = get_project_by_id(project_id) or {}
+    current = proj.get("status")
+    if current != "archived":
+        a_col, _ = st.columns([2, 5])
+        with a_col:
+            if st.button("📦 העבר לארכיון",
+                           key=f"archive_btn_{project_id}",
+                           use_container_width=True,
+                           help="חלופה בטוחה למחיקה: הפרויקט יוסתר מהרשימה הראשית "
+                                "אך כל הנתונים יישמרו. ניתן להחזיר בכל עת."):
+                ok, msg = update_project(project_id, {"status": "archived"})
+                if ok:
+                    st.success(f"✅ הפרויקט הועבר לארכיון. {msg}")
+                    st.cache_data.clear()
+                    st.session_state.pop("edit_project_id", None)
+                    st.rerun()
+                else:
+                    st.error(msg)
+    else:
+        a_col, _ = st.columns([2, 5])
+        with a_col:
+            if st.button("📤 הוצא מארכיון",
+                           key=f"unarchive_btn_{project_id}",
+                           use_container_width=True, type="primary"):
+                ok, msg = update_project(project_id, {"status": "active"})
+                if ok:
+                    st.success("✅ הפרויקט הוחזר ממצב ארכיון לפעיל.")
+                    st.cache_data.clear()
+                    st.session_state.pop("edit_project_id", None)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
     with st.expander("🗑 מחיקת פרויקט (אזור מסוכן)", expanded=False):
         st.warning(
             f"⚠️ פעולה זו תסיר את הפרויקט **`{project_id}`** מהמערכת. "
@@ -384,16 +421,31 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
             _render_add_project_card()
         return
 
-    # ── פילטר סטטוס ──
-    filter_options = ["הכל"] + [STATUS_HE[s] for s in VALID_STATUSES]
+    # ── פילטר סטטוס: ארכיון מוסתר כברירת מחדל ──
+    # "פעילים בלבד" (ברירת מחדל) מציג active+future+paused.
+    # "הכל ללא ארכיון" מציג את כל הסטטוסים פרט ל-archived.
+    # "כולל ארכיון" מציג גם פרויקטים בארכיון.
+    filter_options = (
+        ["פעילים בלבד", "הכל ללא ארכיון"]
+        + [STATUS_HE[s] for s in VALID_STATUSES]
+        + ["כולל ארכיון"]
+    )
     f_col, _ = st.columns([1, 3])
     with f_col:
         chosen = st.selectbox("פילטר לפי סטטוס", filter_options, index=0,
                                 key="proj_status_filter")
 
-    if chosen == "הכל":
+    if chosen == "פעילים בלבד":
+        filtered = [p for p in projects
+                    if validate_project_status(p.get("status"))
+                       in ("active", "future", "paused")]
+    elif chosen == "הכל ללא ארכיון":
+        filtered = [p for p in projects
+                    if validate_project_status(p.get("status")) != "archived"]
+    elif chosen == "כולל ארכיון":
         filtered = projects
     else:
+        # סטטוס ספציפי שנבחר (פעיל / הסתיים / עתידי / מושהה / ארכיון)
         target = next((k for k, v in STATUS_HE.items() if v == chosen), None)
         filtered = [p for p in projects
                     if validate_project_status(p.get("status")) == target]
