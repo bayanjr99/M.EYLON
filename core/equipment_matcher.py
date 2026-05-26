@@ -1,19 +1,23 @@
 """חיבור תנועות דלק/שעות/אחזקה לכלים ב-tools_registry.
 
 לוגיקת התאמה (סדר עדיפויות):
-    1. license_num exact
+    1. license_num exact (normalized)
     2. internal_num exact
     3. tool_name normalized exact
-    4. license extracted from description (regex)
+    4. license extracted from description (regex + normalized)
     5. partial: tool_name appears as substring in description
     6. unmatched → להעביר לחריגות
+
+סיווג סופי לאחר match (`classify_transaction`):
+    - matched_to_tool          — נמצא ב-tools_registry
+    - missing_from_registry    — חולץ רישוי אבל לא ב-registry
+    - bulk_delivery            — מסירה לצובר (לפי ספק)
+    - unmatched_no_clue        — אין שום מידע לזהות
 
 בדיקת validation (אחרי match):
     - סוג דלק תנועה vs fuel_type של הכלי
     - סטטוס פעיל
     - כלי קיים ב-registry
-
-לא לשייך בכוח: אם confidence נמוך → unmatched ולא match.
 """
 from __future__ import annotations
 
@@ -28,15 +32,70 @@ logger = logging.getLogger(__name__)
 
 # regex לזיהוי מספרי רישוי בטקסט חופשי
 # פורמטים נפוצים: 168792, 426-84-302, 510-66-104, 638-12-903
-_LICENSE_DASH_RE = re.compile(r"\b(\d{2,3})-(\d{2,3})-(\d{2,3})\b")
+_LICENSE_DASH_RE = re.compile(r"\b(\d{1,3})-(\d{1,3})-(\d{1,3})\b")
 _LICENSE_DIGITS_RE = re.compile(r"\b(\d{5,8})\b")
+_NUMSEP_RE = re.compile(r"[\s\-.,_/]")
+
+
+def normalize_license_num(value: Any) -> int | None:
+    """מנרמל מספר רישוי לפורמט canonical (int יחיד).
+
+    מטפל ב:
+        '510-66-104'   → 51066104
+        '510 66 104'   → 51066104
+        '510.66.104'   → 51066104
+        ' 168792 '     → 168792
+        '168792.0'     → 168792
+        '0168792'      → 168792 (מסיר אפסים מובילים)
+        168792.0       → 168792 (float)
+        168792         → 168792 (int passthrough)
+        None / NaN / '' / '0' → None
+
+    Returns:
+        int או None אם לא ניתן לחלץ ערך תקין.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float):
+            if value != value:  # NaN
+                return None
+            try:
+                n = int(value)
+            except (OverflowError, ValueError):
+                return None
+        else:
+            n = value
+        return n if n > 0 else None
+    s = str(value).strip()
+    if not s:
+        return None
+    # מקרה (a): float-string ("168792.0") — סינגלי "." בלי separators אחרים
+    # → לפרסר כ-float ולחתוך את החלק העשרוני (מטפל גם ב-"168792.0", "168792.5" → 168792)
+    if "." in s and not any(c in s for c in "-, _/"):
+        try:
+            f = float(s)
+            if f > 0:
+                return int(f)
+        except (ValueError, TypeError):
+            pass
+    # מקרה (b): מספר עם separators (מקפים/נקודות/רווחים בין חלקים) — נחבר את כולם
+    # "510-66-104" → "51066104" ; "510.66.104" → "51066104"
+    s_clean = _NUMSEP_RE.sub("", s)
+    if not s_clean or not s_clean.isdigit():
+        return None
+    try:
+        n = int(s_clean)
+    except ValueError:
+        return None
+    return n if n > 0 else None
 
 
 def extract_license_from_text(text: str) -> int | None:
     """מנסה לחלץ מספר רישוי/כלי מטקסט חופשי.
 
     דוגמאות שאמורות לעבוד:
-        "טעינת רכב חשמלי מס' 510-66-104" → 5106104
+        "טעינת רכב חשמלי מס' 510-66-104" → 51066104
         "שופל קטרפילר 168792" → 168792
         "פורד אדי 426-84-302" → 4268430
     """
@@ -45,18 +104,71 @@ def extract_license_from_text(text: str) -> int | None:
     # קודם נסה עם מקפים (מדויק יותר ללוחיות רכב)
     m = _LICENSE_DASH_RE.search(text)
     if m:
-        digits = m.group(0).replace("-", "")
-        try:
-            return int(digits)
-        except (ValueError, TypeError):
-            pass
+        normalized = normalize_license_num(m.group(0))
+        if normalized:
+            return normalized
     # אחר כך נסה רצף של 5-8 ספרות
     for m in _LICENSE_DIGITS_RE.finditer(text):
-        try:
-            return int(m.group(1))
-        except (ValueError, TypeError):
-            continue
+        n = normalize_license_num(m.group(1))
+        if n:
+            return n
     return None
+
+
+# מילות מפתח לזיהוי ספקי דלק "צובר" — חשבוניות מהם בדרך כלל למסירה
+# לפרויקט שלם (לא לרכב ספציפי). מטופל ע"י substring match כי שמות הספקים
+# בנהלת חשבונות מגיעים עם וריאציות (בע"מ, שותפויות, נקודות, וכו').
+BULK_FUEL_SUPPLIER_KEYWORDS = [
+    "קפיטל אנרג",       # קפיטל אנרג'י
+    "ג'אן",                # נ. ג'אן (substring יתפוס גם "נ. ג'אן בע\"מ")
+    "וואן דלקים",
+    "פז דלקים",
+    "פז חברת",
+    "סונול",
+    "דור אלון",
+    "דלק מוטורס",
+    "ש.מ.ר. דלק",
+]
+
+
+def is_bulk_fuel_supplier(supplier: Any) -> bool:
+    """True אם ספק מזוהה כספק דלק לצובר (לא לרכב ספציפי)."""
+    if not supplier or pd.isna(supplier):
+        return False
+    s = str(supplier).strip()
+    return any(kw in s for kw in BULK_FUEL_SUPPLIER_KEYWORDS)
+
+
+# סטטוסי סיווג סופי לתנועת דלק
+CLASS_MATCHED = "matched_to_tool"
+CLASS_MISSING = "missing_from_registry"
+CLASS_BULK = "bulk_delivery"
+CLASS_UNMATCHED = "unmatched_no_clue"
+
+CLASS_LABEL_HE = {
+    CLASS_MATCHED:   "✓ הותאם לכלי",
+    CLASS_MISSING:   "⚠ כלי חסר ברשימה",
+    CLASS_BULK:      "📦 מסירה לצובר",
+    CLASS_UNMATCHED: "❓ ללא זיהוי",
+}
+
+
+def classify_transaction(row: pd.Series) -> str:
+    """מסווג תנועת דלק לאחת מ-4 קטגוריות.
+
+    - matched_to_tool: matched_by != "unmatched"
+    - missing_from_registry: יש extracted_license אבל אין match
+    - bulk_delivery: ספק מזוהה כצובר ואין license מחולץ
+    - unmatched_no_clue: שום אינדיקציה
+    """
+    matched_by = row.get("matched_by", "")
+    if matched_by and matched_by != "unmatched":
+        return CLASS_MATCHED
+    if pd.notna(row.get("extracted_license")) and row.get("extracted_license"):
+        return CLASS_MISSING
+    if is_bulk_fuel_supplier(row.get("supplier", "")):
+        return CLASS_BULK
+    return CLASS_UNMATCHED
 
 
 def _normalize_hebrew(s: str) -> str:
@@ -86,23 +198,26 @@ def match_to_equipment(license_num: Any, tool_name: str = "",
     if equipment_df is None or equipment_df.empty:
         return dict(UNMATCHED, match_note="אין tools_registry טעון")
 
-    # 1. license_num exact
-    try:
-        if license_num is not None and not pd.isna(license_num):
-            lic = int(float(license_num))
-            hit = equipment_df[equipment_df["license_num"] == lic]
-            if not hit.empty:
-                row = hit.iloc[0]
-                return {
-                    "equipment_id": int(row.get("id", lic)),
-                    "matched_license_num": lic,
-                    "matched_tool_name": str(row.get("tool_name", "")),
-                    "matched_by": "license_num",
-                    "match_confidence": "high",
-                    "match_note": f"exact license {lic}",
-                }
-    except (TypeError, ValueError):
-        pass
+    # 1. license_num exact (normalized)
+    lic = normalize_license_num(license_num)
+    if lic is not None:
+        # ננסה גם בלי וגם עם נירמול בעמודת ה-registry
+        # (אם ה-registry שמור עם dashes, נצטרך לנרמל גם אותו)
+        hit = equipment_df[equipment_df["license_num"] == lic]
+        if hit.empty and "license_num" in equipment_df.columns:
+            # fallback: נירמול גם בצד ה-registry
+            reg_normalized = equipment_df["license_num"].apply(normalize_license_num)
+            hit = equipment_df[reg_normalized == lic]
+        if not hit.empty:
+            row = hit.iloc[0]
+            return {
+                "equipment_id": int(row.get("id", lic)),
+                "matched_license_num": lic,
+                "matched_tool_name": str(row.get("tool_name", "")),
+                "matched_by": "license_num",
+                "match_confidence": "high",
+                "match_note": f"exact license {lic}",
+            }
 
     # 2. internal_num exact
     if internal_num and str(internal_num).strip() and "internal_num" in equipment_df.columns:
@@ -135,11 +250,14 @@ def match_to_equipment(license_num: Any, tool_name: str = "",
                         "match_note": f"שם זהה: {tool_name}",
                     }
 
-    # 4. license extracted from description
+    # 4. license extracted from description (with normalization on both sides)
     if description and str(description).strip():
         extracted_lic = extract_license_from_text(str(description))
         if extracted_lic:
             hit = equipment_df[equipment_df["license_num"] == extracted_lic]
+            if hit.empty and "license_num" in equipment_df.columns:
+                reg_normalized = equipment_df["license_num"].apply(normalize_license_num)
+                hit = equipment_df[reg_normalized == extracted_lic]
             if not hit.empty:
                 row = hit.iloc[0]
                 return {
@@ -288,6 +406,10 @@ def enrich_fuel_transactions(df: pd.DataFrame,
     out = df.copy().reset_index(drop=True)
     for col in enrich_df.columns:
         out[col] = enrich_df[col].values
+
+    # סיווג סופי ל-4 קטגוריות
+    out["classification"] = out.apply(classify_transaction, axis=1)
+    out["classification_label"] = out["classification"].map(CLASS_LABEL_HE).fillna("")
     return out
 
 
