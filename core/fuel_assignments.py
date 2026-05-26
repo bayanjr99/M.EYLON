@@ -118,6 +118,50 @@ def list_assignments(project_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def fuel_cost_per_license(project_id: str,
+                            df_master: pd.DataFrame) -> pd.DataFrame:
+    """מחזיר DataFrame של עלות דלק מ-chashbashevet שמשויכת ידנית
+    לכל license_num.
+
+    שימושי ל-tab "פעילות כלים" כדי להראות את העלות הכספית של חיובי
+    הסולר המצטברים שהוקצו ידנית לכלי ספציפי.
+
+    Returns:
+        DataFrame עם עמודות: license_num, assigned_fuel_cost,
+        n_assigned_tx.
+    """
+    cols = ["license_num", "assigned_fuel_cost", "n_assigned_tx"]
+    assignments = _load_all(project_id)
+    if not assignments or df_master.empty:
+        return pd.DataFrame(columns=cols)
+
+    # סורק את שורות chashbashevet, מחשב hash, ומסנן רק את אלו שיש להן שיוך
+    chash = df_master[df_master["source"] == "chashbashevet"] \
+        if "source" in df_master.columns else df_master
+    if chash.empty:
+        return pd.DataFrame(columns=cols)
+
+    rows = []
+    for _, r in chash.iterrows():
+        h = row_hash(r.get("date"), r.get("supplier"),
+                      r.get("amount"), r.get("description"))
+        if h in assignments:
+            rows.append({
+                "license_num": int(assignments[h]["license_num"]),
+                "amount": float(r.get("amount", 0) or 0),
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(rows)
+    agg = df.groupby("license_num").agg(
+        assigned_fuel_cost=("amount", "sum"),
+        n_assigned_tx=("amount", "size"),
+    ).reset_index()
+    return agg
+
+
 def apply_to_enriched(enriched_df: pd.DataFrame, project_id: str,
                        equipment_df: pd.DataFrame) -> pd.DataFrame:
     """מחיל שיוכים ידניים על DataFrame של תנועות דלק שכבר עברו matching.

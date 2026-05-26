@@ -1100,9 +1100,22 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
     total_liters_all = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0.0
     avg_lp = total_fuel_cost / total_liters_all if total_liters_all > 0 else 0.0
 
-    if hours.empty and solar.empty:
+    # בדיקה אם יש שיוכים ידניים — אם כן, נציג גם אם solar/hours ריקים
+    manual_assignments_exist = False
+    if project_meta:
+        try:
+            from core import fuel_assignments
+            manual_costs = fuel_assignments.fuel_cost_per_license(
+                project_meta["project_id"], df,
+            )
+            manual_assignments_exist = not manual_costs.empty
+        except Exception:
+            pass
+
+    if hours.empty and solar.empty and not manual_assignments_exist:
         ins("blue", "ℹ️", "אין נתוני כלים",
-            "טען דוח שעות עבודה ו/או דוח תדלוקים לחודש.")
+            "טען דוח שעות עבודה ו/או דוח תדלוקים, או שייך תנועות דלק "
+            "מטאב '🔧 התאמת דלק' בסולר.")
         return
 
     # ── אגרגציה מאוחדת לכל כלי ──
@@ -1154,36 +1167,105 @@ def _tab_vehicles_tools(df: pd.DataFrame, project_meta: dict | None = None) -> N
         axis=1
     )
 
+    # ── עלות דלק משויכת ידנית (מ-chashbashevet, דרך טאב התאמת דלק) ──
+    if project_meta:
+        from core import fuel_assignments
+        manual_costs = fuel_assignments.fuel_cost_per_license(
+            project_meta["project_id"], df,
+        )
+        if not manual_costs.empty:
+            # אם יש license_num שמופיע רק במשויכים ידנית (לא ב-solar/hours)
+            # — צריך להוסיף אותו כשורה חדשה ל-merged לפני המיזוג.
+            new_lics = set(manual_costs["license_num"].astype(int)) - \
+                       set(merged["license_num"].dropna().astype(int)) \
+                       if not merged.empty else set(manual_costs["license_num"].astype(int))
+            if new_lics:
+                tools_idx = tools_reg.set_index("license_num", drop=False) \
+                    if not tools_reg.empty and "license_num" in tools_reg.columns \
+                    else pd.DataFrame()
+                add_rows = []
+                for lic in new_lics:
+                    tname = ""
+                    if not tools_idx.empty and lic in tools_idx.index:
+                        tname = str(tools_idx.loc[lic].get("tool_name", "") or "")
+                    add_rows.append({
+                        "license_num": lic, "tool_name": tname,
+                        "total_hours": 0, "work_days": 0,
+                        "total_liters": 0, "fueling_count": 0,
+                    })
+                merged = pd.concat([merged, pd.DataFrame(add_rows)],
+                                      ignore_index=True, sort=False)
+                # מילוי norm_high מהמירשם
+                if not tools_reg.empty and "norm_high" in tools_reg.columns:
+                    merged = merged.drop(columns=[c for c in ("norm_high", "tool_type") if c in merged.columns])
+                    reg_cols = [c for c in ("license_num", "tool_type", "norm_high")
+                                 if c in tools_reg.columns]
+                    merged = merged.merge(tools_reg[reg_cols], on="license_num", how="left")
+
+            merged = merged.merge(manual_costs, on="license_num", how="left")
+            merged["assigned_fuel_cost"] = merged["assigned_fuel_cost"].fillna(0)
+            merged["n_assigned_tx"] = merged["n_assigned_tx"].fillna(0).astype(int)
+        else:
+            merged["assigned_fuel_cost"] = 0
+            merged["n_assigned_tx"] = 0
+    else:
+        merged["assigned_fuel_cost"] = 0
+        merged["n_assigned_tx"] = 0
+
+    # ── עלות סולר כוללת = עלות משוערת + שיוכים ידניים ──
+    merged["fuel_cost_total"] = (
+        merged["fuel_cost_est"].fillna(0) + merged["assigned_fuel_cost"].fillna(0)
+    ).round(0)
+    # ל'/ש' מבחינת עלות (₪/שעה)
+    merged["cost_per_hour"] = merged.apply(
+        lambda r: round(r["fuel_cost_total"] / r["total_hours"], 1)
+        if r["total_hours"] > 0 else 0, axis=1,
+    )
+
     # ── תצוגה מאוחדת ──
     sec("כל הכלים בפרויקט")
     n_tools = int(merged["license_num"].nunique())
     total_h = float(merged["total_hours"].sum())
     total_l = float(merged["total_liters"].sum())
+    total_manual = float(merged["assigned_fuel_cost"].sum())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("כלים פעילים", str(n_tools))
-    c2.metric("סה\"כ שעות", f"{total_h:,.0f}")
-    c3.metric("סה\"כ ליטרים", f"{total_l:,.0f}")
-    c4.metric("עלות סולר משוערת", _fmt_money(float(merged["fuel_cost_est"].sum())))
+    c1.metric("כלים פעילים", format_number(n_tools))
+    c2.metric("סה\"כ שעות", format_number(total_h))
+    c3.metric("סה\"כ ליטרים", format_number(total_l))
+    c4.metric("עלות סולר כוללת",
+              format_currency(merged["fuel_cost_total"].sum()),
+              delta=f"מזה {format_currency(total_manual)} משוייך ידנית"
+              if total_manual else None)
 
     show_cols = ["license_num", "tool_name", "tool_type", "total_hours",
                  "work_days", "total_liters", "fueling_count",
-                 "lph_actual", "norm_high", "fuel_cost_est", "over_norm"]
+                 "lph_actual", "norm_high",
+                 "fuel_cost_est", "assigned_fuel_cost", "fuel_cost_total",
+                 "cost_per_hour", "over_norm"]
     show_cols = [c for c in show_cols if c in merged.columns]
     disp = merged[show_cols].copy()
     disp["total_hours"] = disp["total_hours"].round(1)
     if "total_liters" in disp.columns:
         disp["total_liters"] = disp["total_liters"].round(0)
     heb = {
-        "license_num": "מס' רישוי", "tool_name": "שם כלי", "tool_type": "סוג",
-        "total_hours": "שעות", "work_days": "ימי עבודה",
-        "total_liters": "ליטרים", "fueling_count": "תדלוקים",
-        "lph_actual": "ל'/ש'", "norm_high": "תקן", "fuel_cost_est": "עלות סולר משוערת (₪)",
-        "over_norm": "מצב",
+        "license_num":         "מס' רישוי",
+        "tool_name":           "שם כלי",
+        "tool_type":           "סוג",
+        "total_hours":         "שעות",
+        "work_days":           "ימי עבודה",
+        "total_liters":        "ליטרים",
+        "fueling_count":       "תדלוקים",
+        "lph_actual":          "ל'/ש'",
+        "norm_high":           "תקן",
+        "fuel_cost_est":       "עלות סולר משוערת (₪)",
+        "assigned_fuel_cost":  "₪ דלק משויך ידנית",
+        "fuel_cost_total":     "סה\"כ עלות סולר (₪)",
+        "cost_per_hour":       "₪ / שעה",
+        "over_norm":           "מצב",
     }
     disp.columns = [heb.get(c, c) for c in show_cols]
-    display_dataframe(disp.sort_values("עלות סולר משוערת (₪)" if "עלות סולר משוערת (₪)" in disp.columns else disp.columns[0],
-                                  ascending=False),
-                 use_container_width=True, hide_index=True)
+    sort_col = "סה\"כ עלות סולר (₪)" if "סה\"כ עלות סולר (₪)" in disp.columns else disp.columns[0]
+    display_dataframe(disp.sort_values(sort_col, ascending=False))
 
     # ── חריגות סולר ──
     sec("חריגות צריכת סולר", meta="ל'/ש' מעל תקן × 1.15")
