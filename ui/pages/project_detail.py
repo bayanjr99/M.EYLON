@@ -3279,20 +3279,36 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                 description_col="description", fuel_type_col="fuel_type",
             )
 
-            # ── סטטיסטיקת matching ──
+            # ── סטטיסטיקת matching: פילוח 4-קטגוריות ──
+            from core.equipment_matcher import (
+                CLASS_MATCHED, CLASS_MISSING, CLASS_BULK, CLASS_UNMATCHED,
+            )
             n_total = len(enriched)
-            n_matched = int((enriched["matched_by"] != "unmatched").sum())
-            n_high = int((enriched["match_confidence"] == "high").sum())
-            n_low = int((enriched["match_confidence"] == "low").sum())
+            n_by_class = enriched["classification"].value_counts().to_dict()
+            n_matched = n_by_class.get(CLASS_MATCHED, 0)
+            n_missing = n_by_class.get(CLASS_MISSING, 0)
+            n_bulk    = n_by_class.get(CLASS_BULK, 0)
+            n_unmatched = n_by_class.get(CLASS_UNMATCHED, 0)
+
+            mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+            mk1.metric("סה\"כ תנועות דלק", format_number(n_total))
+            mk2.metric("✓ הותאם לכלי", format_number(n_matched),
+                       delta=f"{(n_matched/n_total*100):.0f}%" if n_total else None)
+            mk3.metric("📦 מסירה לצובר", format_number(n_bulk),
+                       help="חשבונית מספק דלק לפרויקט שלם — לא רכב ספציפי")
+            mk4.metric("⚠ כלי חסר ברשימה", format_number(n_missing),
+                       help="מס' רישוי חולץ מהתיאור אך לא נמצא ב-tools_registry")
+            mk5.metric("❓ ללא זיהוי", format_number(n_unmatched),
+                       help="לא חולץ רישוי, לא ספק צובר מזוהה — דורש בדיקה ידנית")
+
+            # שורת validation מתחת
             n_err = int((enriched["validation_status"] == "error").sum())
             n_warn = int((enriched["validation_status"] == "warning").sum())
-            mk1, mk2, mk3, mk4, mk5 = st.columns(5)
-            mk1.metric("סה\"כ תנועות דלק", str(n_total))
-            mk2.metric("הותאמו לכלי", str(n_matched),
-                         delta=f"{(n_matched/n_total*100):.0f}%" if n_total else None)
-            mk3.metric("בטחון גבוה", str(n_high))
-            mk4.metric("אזהרות validation", str(n_warn))
-            mk5.metric("שגיאות validation", str(n_err))
+            if n_err or n_warn:
+                st.caption(
+                    f"🔍 validation: {n_warn:,} אזהרות · {n_err:,} שגיאות "
+                    "(אי-התאמה בין סוג דלק לסוג כלי). פירוט בהמשך."
+                )
 
             # ── סיכום לפי כלי ──
             matched = enriched[enriched["matched_by"] != "unmatched"].copy()
@@ -3367,20 +3383,42 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
-            # ── תנועות לא מותאמות ──
-            unmatched = enriched[enriched["matched_by"] == "unmatched"]
-            if not unmatched.empty:
-                sec(f"דלק ללא כלי מזוהה ({len(unmatched)} תנועות)",
-                    meta="דורש הוספת הכלי ל-tools_registry או בחירה ידנית")
+            # ── מסירות לצובר (bulk_delivery) — לא דורשות שיוך לכלי ──
+            bulk = enriched[enriched["classification"] == CLASS_BULK]
+            if not bulk.empty:
+                bulk_total = pd.to_numeric(bulk["total_cost"], errors="coerce").fillna(0).sum()
+                sec(f"📦 מסירות סולר לצובר ({len(bulk)} תנועות · ₪{bulk_total:,.0f})",
+                    meta="חשבוניות מספקי דלק לפרויקט (לא לרכב ספציפי) — מהוות קניות למלאי")
+                ins("blue", "ℹ️",
+                    "מסירות אלו לא דורשות שיוך לכלי מסוים.",
+                    "הסולר נכנס למיכל הפרויקט/צובר. השימוש בפועל מתועד בנפרד "
+                    "בטאב 'שימוש בסולר' (מ-יומן שטח).")
+                cols = [c for c in ["date", "month", "supplier", "description",
+                                    "total_cost", "fuel_type"]
+                        if c in bulk.columns]
+                heb_b = {"date": "תאריך", "month": "חודש", "supplier": "ספק",
+                         "description": "פרטים", "total_cost": "₪",
+                         "fuel_type": "סוג דלק"}
+                disp_b = bulk[cols].copy()
+                if "total_cost" in disp_b.columns:
+                    disp_b["total_cost"] = pd.to_numeric(disp_b["total_cost"], errors="coerce").round(0)
+                disp_b.columns = [heb_b.get(c, c) for c in cols]
+                display_dataframe(disp_b, use_container_width=True, hide_index=True)
+
+            # ── תנועות ללא זיהוי כלי וללא ספק צובר מזוהה ──
+            unmatched_strict = enriched[enriched["classification"] == CLASS_UNMATCHED]
+            if not unmatched_strict.empty:
+                sec(f"❓ דלק ללא זיהוי ({len(unmatched_strict)} תנועות)",
+                    meta="לא חולץ רישוי, לא ספק צובר — דורש בדיקה ידנית")
                 cols = [c for c in ["date", "month", "source_kind", "supplier",
-                                      "description", "qty_liters", "total_cost",
-                                      "fuel_type", "match_note"]
-                        if c in unmatched.columns]
+                                    "description", "qty_liters", "total_cost",
+                                    "fuel_type", "match_note"]
+                        if c in unmatched_strict.columns]
                 heb = {"date": "תאריך", "month": "חודש", "source_kind": "מקור",
                        "supplier": "ספק", "description": "פרטים",
                        "qty_liters": "ליטרים", "total_cost": "₪", "fuel_type": "סוג דלק",
                        "match_note": "הערת התאמה"}
-                disp_u = unmatched[cols].copy()
+                disp_u = unmatched_strict[cols].copy()
                 for c in ("qty_liters", "total_cost"):
                     if c in disp_u.columns:
                         disp_u[c] = pd.to_numeric(disp_u[c], errors="coerce").round(0)
@@ -3391,9 +3429,9 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
                 from io import BytesIO
                 buf = BytesIO()
                 with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                    disp_u.to_excel(writer, sheet_name="לא מותאמים", index=False)
+                    disp_u.to_excel(writer, sheet_name="ללא זיהוי", index=False)
                 st.download_button(
-                    f"⬇️ ייצוא {len(unmatched)} תנועות לא מותאמות לאקסל",
+                    f"⬇️ ייצוא {len(unmatched_strict)} תנועות ללא זיהוי לאקסל",
                     data=buf.getvalue(),
                     file_name=f"fuel_unmatched_{project_meta['project_id']}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3773,7 +3811,22 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
         combined = total_solar_l + total_tracker_l
         st.metric("סה\"כ שימוש מחושב (ל')", format_number(combined))
 
-    # ── סיכום מילולי מתחת ל-cards (spec 14) ──
+    # ── ספירת שורות תקינות מול בעיתיות מ-fuel_tracker ──
+    n_clean = n_problematic = 0
+    clean_liters = problematic_liters = 0.0
+    problematic_breakdown: dict = {}
+    if has_tracker and "status" in tracker.columns:
+        from core.fuel_tracker_loader import is_anomaly_status
+        anom_mask = tracker["status"].apply(is_anomaly_status)
+        n_problematic = int(anom_mask.sum())
+        n_clean = len(tracker) - n_problematic
+        problematic_liters = float(
+            pd.to_numeric(tracker.loc[anom_mask, "liters"], errors="coerce").fillna(0).sum()
+        )
+        clean_liters = total_tracker_l - problematic_liters
+        problematic_breakdown = dict(tracker.loc[anom_mask, "status"].value_counts())
+
+    # ── סיכום מילולי מתחת ל-cards ──
     summary_parts = []
     if has_tracker:
         summary_parts.append(f"שימוש מיומן שטח = **{format_number(total_tracker_l)}** ל'")
@@ -3790,6 +3843,33 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
             + ' &nbsp;·&nbsp; '.join(summary_parts) + '</div>',
             unsafe_allow_html=True,
         )
+
+    # ── הפרדה ברורה: תקין vs בעיתי (spec 7, 8) ──
+    if has_tracker and (n_clean or n_problematic):
+        sec("הרכב נתוני התדלוק",
+            meta="הפרדה בין שורות תקינות לשורות שדורשות בדיקה")
+        rk1, rk2, rk3 = st.columns(3)
+        with rk1:
+            st.metric("✓ שורות תקינות", format_number(n_clean),
+                      delta=f"{format_number(clean_liters)} ל'")
+        with rk2:
+            st.metric("⚠ שורות בעייתיות", format_number(n_problematic),
+                      delta=f"{format_number(problematic_liters)} ל'")
+        with rk3:
+            ratio = (clean_liters / total_tracker_l * 100) if total_tracker_l else 0
+            st.metric("% ליטרים מתוך תקינות", f"{ratio:.1f}%",
+                      help="חלק הליטרים שמגיע משורות תקינות. ערך נמוך = להתבסס בעיקר על הקובץ למידע ולא על חישובים")
+        if problematic_breakdown:
+            breakdown_html = "<br>".join(
+                f"• <code>{s}</code>: {c:,} שורות"
+                for s, c in problematic_breakdown.items()
+            )
+            ins("amber", "⚠️",
+                f"פירוט {n_problematic:,} השורות הבעייתיות:",
+                breakdown_html + "<br><br>"
+                "<b>שורות אלו לא נכללות בחישובי ליטר/שעה ממוצעים בטאב 'ניתוח'.</b> "
+                "הן כן נספרות בסכום הליטרים הכולל (שכן הסולר אכן נצרך)."
+                )
 
     # ── מידע על מקורות הנתונים (spec 12) ──
     if has_tracker:
@@ -3860,6 +3940,145 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
 
 
 # ─── סולר וכלים → מלאי סולר (Step 4) ───────────────────────
+def _render_purchase_vs_usage_summary(
+    df: pd.DataFrame, project_meta: dict,
+) -> None:
+    """דוח התאמה חי: סה״כ קניות סולר vs סה״כ שימוש + פירוט חודשי.
+
+    מציג:
+      - 4 מטריקות עליונות: קניות (ל'), שימוש (ל'), הפרש (ל'), הפרש (₪)
+      - טבלת התאמה חודשית
+      - הסבר שקניות ושימוש לא חייבים להיות שווים (צובר / שיהוי חודשים)
+    """
+    from pipeline import load_fuel_tracker_data, load_fuel_invoices_data
+    project_id = project_meta["project_id"]
+
+    sec("📊 התאמה: קניות vs שימוש (בליטרים)",
+        meta="קניות סולר מהכרטיס/חשבוניות מול שימוש מיומן שטח")
+
+    # ── מקור A: קניות (ל') ──
+    # עדיפות: fuel_invoices (יש ליטרים מפורשים); fallback: chashbashevet ₪ / מחיר ממוצע
+    inv = load_fuel_invoices_data(project_id)
+    purchases_per_month: dict = {}
+    if not inv.empty and "liters" in inv.columns:
+        for m, grp in inv.groupby("month"):
+            purchases_per_month[m] = float(
+                pd.to_numeric(grp["liters"], errors="coerce").fillna(0).sum()
+            )
+    total_purchases_l = sum(purchases_per_month.values())
+
+    # ── מקור B: שימוש (ל') ──
+    tracker = load_fuel_tracker_data(project_id)
+    usage_per_month: dict = {}
+    if not tracker.empty and "date" in tracker.columns and "liters" in tracker.columns:
+        tr = tracker.copy()
+        tr["date"] = pd.to_datetime(tr["date"], errors="coerce")
+        tr["month"] = tr["date"].dt.strftime("%m-%Y")
+        for m, grp in tr.groupby("month"):
+            usage_per_month[m] = float(
+                pd.to_numeric(grp["liters"], errors="coerce").fillna(0).sum()
+            )
+    total_usage_l = sum(usage_per_month.values())
+
+    # ── מחיר ממוצע לליטר (מ-fuel_invoices אם יש; אחרת לא מחושב) ──
+    avg_price = None
+    if not inv.empty and "liters" in inv.columns and "total_cost" in inv.columns:
+        liters_sum = pd.to_numeric(inv["liters"], errors="coerce").fillna(0).sum()
+        cost_sum = pd.to_numeric(inv["total_cost"], errors="coerce").fillna(0).sum()
+        if liters_sum > 0:
+            avg_price = cost_sum / liters_sum
+
+    # ── 4 מטריקות עליונות ──
+    delta_l = total_purchases_l - total_usage_l
+    delta_nis = (delta_l * avg_price) if avg_price else None
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if total_purchases_l > 0:
+            st.metric("סה\"כ קניות (ל')", format_number(total_purchases_l))
+        else:
+            st.markdown(_na_card("סה\"כ קניות (ל')",
+                                  "אין fuel_invoices.xlsx"), unsafe_allow_html=True)
+    with c2:
+        if total_usage_l > 0:
+            st.metric("סה\"כ שימוש (ל')", format_number(total_usage_l))
+        else:
+            st.markdown(_na_card("סה\"כ שימוש (ל')",
+                                  "אין fuel_tracker"), unsafe_allow_html=True)
+    with c3:
+        if total_purchases_l > 0 and total_usage_l > 0:
+            color = "green" if delta_l >= 0 else "red"
+            st.metric(
+                "הפרש (ל')",
+                f"{delta_l:+,.0f}",
+                help="חיובי = מצטבר מלאי / שימוש בחודש אחר; שלילי = שימוש > קניות בתקופה",
+            )
+        else:
+            st.markdown(_na_card("הפרש (ל')", "—"), unsafe_allow_html=True)
+    with c4:
+        if delta_nis is not None:
+            st.metric(
+                "הפרש (₪)",
+                f"{delta_nis:+,.0f}",
+                help=f"לפי מחיר ממוצע: ₪{avg_price:.2f}/ל'",
+            )
+        else:
+            st.markdown(_na_card("הפרש (₪)", "אין מחיר ממוצע"),
+                       unsafe_allow_html=True)
+
+    # ── הסבר ──
+    ins("blue", "ℹ️",
+        "קניות ושימוש לא חייבים להיות שווים",
+        "קניות יכולות להיכנס למיכל/צובר בחודש מסוים והשימוש מהן יכול להתחלק "
+        "על פני חודשים מאוחרים יותר. ההפרש מייצג שינוי מלאי + תנועות שטרם שויכו.")
+
+    # ── טבלת התאמה חודשית ──
+    all_months = sorted(set(purchases_per_month.keys()) | set(usage_per_month.keys()))
+    if all_months:
+        sec("התאמה חודשית")
+        rows = []
+        for m in all_months:
+            p = purchases_per_month.get(m, 0)
+            u = usage_per_month.get(m, 0)
+            d = p - u
+            d_nis = (d * avg_price) if avg_price else None
+            rows.append({
+                "חודש": m,
+                "קניות (ל')": p if p > 0 else None,
+                "שימוש (ל')": u if u > 0 else None,
+                "הפרש (ל')": d if (p > 0 or u > 0) else None,
+                "הפרש (₪)": round(d_nis, 0) if d_nis is not None and (p > 0 or u > 0) else None,
+            })
+        recon = pd.DataFrame(rows)
+        # שורת סה״כ
+        total_row = {
+            "חודש": "סה\"כ",
+            "קניות (ל')": total_purchases_l if total_purchases_l > 0 else None,
+            "שימוש (ל')": total_usage_l if total_usage_l > 0 else None,
+            "הפרש (ל')": delta_l if (total_purchases_l > 0 or total_usage_l > 0) else None,
+            "הפרש (₪)": round(delta_nis, 0) if delta_nis is not None else None,
+        }
+        recon = pd.concat([recon, pd.DataFrame([total_row])], ignore_index=True)
+        # format strings → "—" for None
+        for col in ("קניות (ל')", "שימוש (ל')", "הפרש (ל')", "הפרש (₪)"):
+            recon[col] = recon[col].apply(
+                lambda v: "—" if pd.isna(v) else f"{float(v):,.0f}"
+            )
+        display_dataframe(recon, use_container_width=True, hide_index=True)
+
+
+def _na_card(label: str, message: str) -> str:
+    """HTML של כרטיס 'לא נטען'/'—' בעיצוב neutral."""
+    return (
+        f'<div style="background:#F8FAFC;border:1px solid #CBD5E1;'
+        f'border-radius:8px;padding:10px 14px;text-align:center">'
+        f'<div style="font-size:11px;color:#64748B;font-weight:600">{label}</div>'
+        f'<div style="font-size:16px;font-weight:700;color:#475569;'
+        f'margin-top:6px">{message}</div>'
+        f'</div>'
+    )
+
+
 def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
     """מאזן מלאי סולר עם הפרדה לפי סוג דלק + טופס הזנה + reconciliation.
 
@@ -3870,6 +4089,9 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
     from pipeline import load_fuel_invoices_data
     project_id = project_meta["project_id"]
 
+    # ── דוח התאמה: קניות vs שימוש (חדש, בראש הטאב) ──
+    _render_purchase_vs_usage_summary(df, project_meta)
+
     chash = df[df["source"] == "chashbashevet"] if "source" in df.columns else df.iloc[0:0]
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
     if "main_category" in chash.columns:
@@ -3878,7 +4100,7 @@ def _subtab_fuel_inventory(df: pd.DataFrame, project_meta: dict) -> None:
         fuel_chash = pd.DataFrame()
 
     # ── סיכום עליון לפי סוג דלק ──
-    sec("סיכום מלאי וקניות לפי סוג דלק")
+    sec("סיכום מלאי וקניות לפי סוג דלק (₪)")
     FUEL_TYPES = [
         ("סולר צמ\"ה", "🚜", True),    # has_inventory=True
         ("סולר רכבים", "🚗", False),
