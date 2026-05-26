@@ -350,8 +350,8 @@ def _render_tools_management() -> None:
             disp_xlsx.columns = [heb_xlsx.get(c, c) for c in cols]
             display_dataframe(disp_xlsx, use_container_width=True, hide_index=True)
 
-    # ── טופס הוספה (מתחת לרשימה) ──
-    with st.expander("➕ הוסף כלי חדש", expanded=tools.empty):
+    # ── טופס הוספה (מתחת לרשימה, מקופל כברירת מחדל) ──
+    with st.expander("➕ הוסף כלי חדש", expanded=False):
         with st.form("add_tool_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             with c1:

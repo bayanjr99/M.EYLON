@@ -93,8 +93,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     if render_detail_view(df_master, project_meta):
         return
 
-    # ── Back / Edit / דוח מנהלים / דוח לבנק (שורה אחת מעל הכותרת) ──
-    back_col, edit_col, report_col, bank_col, _spacer = st.columns([1, 2, 2, 2, 1])
+    # ── Back / Edit (שורה אחת מעל הכותרת) ──
+    back_col, edit_col, _spacer = st.columns([1, 2, 5])
     with back_col:
         if st.button("← חזרה לרשימה", key="back_to_list", use_container_width=True):
             st.session_state.pop("selected_project_id", None)
@@ -104,42 +104,6 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                        use_container_width=True, type="primary"):
             st.session_state["edit_project_id"] = project_id
             st.rerun()
-    with report_col:
-        # הפק את דוח המנהלים כ-bytes ברגע שלוחצים — הופך לכפתור הורדה.
-        # הדוח קל יחסית (~50KB), חישוב מהיר.
-        try:
-            from core.management_report import export_management_report
-            report_bytes = export_management_report(project_id, df_master,
-                                                       include_transactions=False)
-            ts = datetime.now().strftime("%Y%m%d_%H%M")
-            st.download_button(
-                "📥 דוח מנהלים",
-                data=report_bytes,
-                file_name=f"manager_report_{project_id}_{ts}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="mgr_report_dl",
-                help="קובץ Excel רב-גליונות: סיכום, הכנסות, הוצאות, ספקים, דלק, "
-                     "שעות, חריגות.",
-            )
-        except Exception as _exc:
-            st.caption(f"שגיאה בהפקת דוח: {_exc}")
-    with bank_col:
-        try:
-            from core.bank_report import export_bank_report
-            bank_bytes = export_bank_report(project_id, df_master)
-            ts = datetime.now().strftime("%Y%m%d_%H%M")
-            st.download_button(
-                "🏦 דוח לבנק",
-                data=bank_bytes,
-                file_name=f"bank_report_{project_id}_{ts}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="bank_report_dl",
-                help="דוח מקצועי לשליחה לבנק / משקיע / רואה חשבון.",
-            )
-        except Exception as _exc:
-            st.caption(f"שגיאה בדוח בנק: {_exc}")
 
     # ── Header card ─────────────────────────────────────────
     st.markdown(
@@ -246,84 +210,6 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     )
     st.markdown(period_html, unsafe_allow_html=True)
 
-    # ── ADMIN MODE: ייבוא/תקציב/בדיקות פותחים תצוגה נפרדת ──
-    admin_view = st.session_state.get("admin_view")
-    if admin_view:
-        if st.button("← חזרה לטאבים הראשיים", key="back_from_admin",
-                       use_container_width=False):
-            st.session_state.pop("admin_view", None)
-            st.rerun()
-        if admin_view == "import":
-            sub = st.tabs(["ייבוא קבצים", "היסטוריית ייבוא", "גיבוי וייצוא"])
-            with sub[0]:
-                from ui.pages.import_data import render_import_page
-                from pipeline import list_available_projects
-                render_import_page(list_available_projects())
-            with sub[1]:
-                _subtab_import_history(project_meta)
-            with sub[2]:
-                _subtab_backup_export(project_meta)
-        elif admin_view == "budget":
-            from ui.pages.budget import render_budget_tab
-            render_budget_tab(df, project_meta)
-        elif admin_view == "qa":
-            _tab_qa(df, project_meta)
-        elif admin_view == "tasks":
-            _tab_tasks(project_meta)
-        elif admin_view == "documents":
-            _tab_documents(project_meta)
-        elif admin_view == "analytics":
-            _tab_analytics(df_master, project_meta)
-        return
-
-    # ── HEADER: 5 כפתורי ניהול (לא טאבים) ──
-    # מוסיף ספירת משימות פתוחות + מסמכים
-    try:
-        from core.project_tasks import count_tasks
-        tcounts = count_tasks(project_id)
-        n_open = tcounts.get("open", 0) + tcounts.get("in_progress", 0)
-        tasks_label = f"📋 משימות ({n_open})" if n_open else "📋 משימות"
-    except Exception:
-        tasks_label = "📋 משימות"
-    try:
-        from core.project_documents import count_documents
-        n_docs = count_documents(project_id)
-        docs_label = f"📎 מסמכים ({n_docs})" if n_docs else "📎 מסמכים"
-    except Exception:
-        docs_label = "📎 מסמכים"
-
-    adm1, adm2, adm3, adm4, adm5, adm6, _ = st.columns([1, 1, 1, 1, 1, 1, 1])
-    with adm1:
-        if st.button("📁 ייבוא נתונים", key="admin_import",
-                       use_container_width=True):
-            st.session_state["admin_view"] = "import"
-            st.rerun()
-    with adm2:
-        if st.button("📈 תקציב מול ביצוע", key="admin_budget",
-                       use_container_width=True):
-            st.session_state["admin_view"] = "budget"
-            st.rerun()
-    with adm3:
-        if st.button("🔍 בדיקות וחריגות", key="admin_qa",
-                       use_container_width=True):
-            st.session_state["admin_view"] = "qa"
-            st.rerun()
-    with adm4:
-        if st.button(tasks_label, key="admin_tasks",
-                       use_container_width=True):
-            st.session_state["admin_view"] = "tasks"
-            st.rerun()
-    with adm5:
-        if st.button(docs_label, key="admin_documents",
-                       use_container_width=True):
-            st.session_state["admin_view"] = "documents"
-            st.rerun()
-    with adm6:
-        if st.button("📊 רווחיות ותחזית", key="admin_analytics",
-                       use_container_width=True):
-            st.session_state["admin_view"] = "analytics"
-            st.rerun()
-
     # ── 5 טאבים ראשיים בלבד ──
     tabs = st.tabs([
         "📊 סקירה כללית",
@@ -354,9 +240,8 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
             _tab_transactions(df)
 
     with tabs[2]:
-        # סולר: 5 sub-tabs (כולל התאמת דלק חדש)
-        sub = st.tabs(["קניות סולר", "שימוש בסולר", "סיכום מלאי",
-                        "ניתוח", "🔧 התאמת דלק"])
+        # סולר: 3 sub-tabs
+        sub = st.tabs(["קניות סולר", "שימוש בסולר", "סיכום מלאי"])
         with sub[0]:
             breadcrumb("סולר", "קניות סולר")
             _subtab_fuel_purchases(df, project_meta)
@@ -372,12 +257,6 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         with sub[2]:
             breadcrumb("סולר", "סיכום מלאי")
             _subtab_fuel_inventory(df, project_meta)
-        with sub[3]:
-            breadcrumb("סולר", "ניתוח צריכה")
-            _subtab_consumption_per_tool(df, project_meta)
-        with sub[4]:
-            breadcrumb("סולר", "התאמת דלק לכלים")
-            _subtab_fuel_matching(df, project_meta)
 
     with tabs[3]:
         # שעות עבודה: 3 sub-tabs (עם הזנה ידנית בכל אחד)
@@ -402,9 +281,9 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
                 _render_sub_tab("contractor_work_logs", project_id, None, None)
 
     with tabs[4]:
-        # כלים: 5 sub-tabs (נוסף "כרטיס כלי" עם drill-down מלא)
+        # כלים: 4 sub-tabs
         sub = st.tabs(["רשימת כלים", "פעילות כלים", "עלויות כלי",
-                        "ניתוח כלי", "🔍 כרטיס כלי מלא"])
+                        "ניתוח כלי"])
         with sub[0]:
             breadcrumb("כלים", "רשימת כלים")
             from ui.pages.field_data_entry import _render_tools_management
@@ -421,8 +300,6 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
         with sub[3]:
             breadcrumb("כלים", "ניתוח כלי")
             _subtab_cost_per_hour(df, project_meta)
-        with sub[4]:
-            _subtab_equipment_full_detail(df, project_meta)
 
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
@@ -3680,6 +3557,34 @@ def _subtab_fuel_purchases(df: pd.DataFrame, project_meta: dict) -> None:
 
 
 # ─── סולר וכלים → שימוש בסולר ──────────────────────────────
+def _append_fuel_total_row(disp: pd.DataFrame) -> pd.DataFrame:
+    """מוסיף שורת סה״כ בתחתית טבלת תדלוקים — מסכם ליטרים.
+
+    שומר על ה-dtype של כל עמודה (NaT לתאריך, NaN למספרי) כדי לא
+    לשבור את ה-column_config formatting של st.dataframe.
+    """
+    if disp.empty:
+        return disp
+    total: dict = {}
+    for col, dtype in disp.dtypes.items():
+        if pd.api.types.is_datetime64_any_dtype(dtype):
+            total[col] = pd.NaT
+        elif pd.api.types.is_numeric_dtype(dtype):
+            total[col] = float("nan")
+        else:
+            total[col] = None
+    label_col = "שם כלי" if "שם כלי" in disp.columns else disp.columns[0]
+    total[label_col] = f'סה״כ ({len(disp):,} תדלוקים)'
+    if "ליטרים" in disp.columns:
+        total["ליטרים"] = float(pd.to_numeric(disp["ליטרים"], errors="coerce").sum())
+    total_df = pd.DataFrame([total]).astype(
+        {col: disp[col].dtype for col in disp.columns
+         if pd.api.types.is_datetime64_any_dtype(disp[col].dtype)
+         or pd.api.types.is_numeric_dtype(disp[col].dtype)},
+    )
+    return pd.concat([disp, total_df], ignore_index=True)
+
+
 def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
     """שימוש בסולר בפועל - מתדלוקים ומיומן שטח."""
     sec("שימוש בסולר", meta="תדלוקים בפועל לכלים")
@@ -3706,6 +3611,7 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                 if c in solar.columns]
         disp = solar[cols].copy().sort_values("date" if "date" in cols else cols[0])
         disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
+        disp = _append_fuel_total_row(disp)
         display_dataframe(disp, use_container_width=True, hide_index=True)
 
     if not site_fuel.empty:
@@ -3715,6 +3621,7 @@ def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
                 if c in site_fuel.columns]
         disp = site_fuel[cols].copy().sort_values("date" if "date" in cols else cols[0])
         disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
+        disp = _append_fuel_total_row(disp)
         display_dataframe(disp, use_container_width=True, hide_index=True)
 
 

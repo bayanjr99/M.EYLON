@@ -31,7 +31,6 @@ logger.info("=== dashboard script started ===")
 # ── Imports פנימיים ────────────────────────────────────────
 import pipeline
 from ui.components import render_top_bar
-from ui.pages.import_data import render_import_page
 from ui.pages.project_detail import render_project_detail
 from ui.pages.projects_list import render_projects_list
 from ui.styles import LOADING_VEIL, MAIN_CSS
@@ -123,10 +122,7 @@ render_top_bar(
 selected_project_id = st.session_state.get("selected_project_id")
 current_view = st.session_state.get("view")
 
-if current_view == "import":
-    # מסך ייבוא נתונים
-    render_import_page(projects)
-elif current_view == "comparisons":
+if current_view == "comparisons":
     # מסך השוואות (בין חודשים / בין פרויקטים)
     from ui.pages.comparisons_view import render_comparisons_page
     render_comparisons_page(df_master, projects)
@@ -144,14 +140,9 @@ elif selected_project_id:
     else:
         render_project_detail(df_master, project_meta)
 else:
-    # מסך נחיתה — רשימת פרויקטים + כפתורי ניווט עליונים
-    nav1, nav2, _ = st.columns([1, 1, 4])
+    # מסך נחיתה — רשימת פרויקטים + כפתור השוואות
+    nav1, _ = st.columns([1, 5])
     with nav1:
-        if st.button("📁 ייבוא נתונים", key="open_import",
-                     use_container_width=True, type="primary"):
-            st.session_state["view"] = "import"
-            st.rerun()
-    with nav2:
         if st.button("📊 השוואות", key="open_comparisons",
                      use_container_width=True,
                      help="השווה בין חודשים או בין פרויקטים"):
