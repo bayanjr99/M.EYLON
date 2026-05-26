@@ -21,6 +21,7 @@ from core import (
     chashbashevet_loader,
     fuel_inventory,
     fuel_invoices_loader,
+    fuel_tracker_loader,
     hours_loader,
     site_tracking_loader,
     solar_loader,
@@ -94,6 +95,7 @@ def list_available_months(project_id: str) -> list[str]:
 SITE_TRACKING_PARQUET = DATA_ROOT / "site_tracking.parquet"
 FUEL_INVOICES_XLSX = DATA_ROOT / "fuel_invoices.xlsx"
 FUEL_INVOICES_PARQUET = DATA_ROOT / "fuel_invoices.parquet"
+FUEL_TRACKER_PARQUET = DATA_ROOT / "fuel_tracker.parquet"
 
 
 def build_fuel_invoices_parquet() -> None:
@@ -245,6 +247,73 @@ def load_site_tracking_data(project_id: str | None = None) -> dict[str, pd.DataF
     if project_id:
         return load_project_site_tracking(project_id)
     return {k: pd.DataFrame() for k in site_tracking_loader.SHEET_KEYS}
+
+
+def build_fuel_tracker_parquet() -> None:
+    """אוסף את "מעקב סולר וטיפולים — כלי צמה.xlsx" מכל הפרויקטים ל-parquet.
+
+    הקובץ הזה הוא המקור החי לתדלוקים (גליון "יומן סולר" עם כל
+    האירועים: ליטרים, שעות מנוע, ספירת שעות, צריכה, סטטוס חריגה).
+
+    כמו site_tracking — ה-xlsx local-only (gitignored), והפרקט נדחף
+    לענן כדי ש-Streamlit Cloud יראה את הנתונים.
+    """
+    all_frames: list[pd.DataFrame] = []
+    for p in list_available_projects():
+        pid = p["project_id"]
+        site_name = p.get("site_name") or p.get("project_name") or pid
+        project_dir = PROJECTS_ROOT / pid
+        df = fuel_tracker_loader.load_fuel_tracker(project_dir, site_name=site_name)
+        if df.empty:
+            continue
+        # apply system classification (status + lph_display)
+        df = fuel_tracker_loader.apply_classification(df)
+        df["project_id"] = pid
+        all_frames.append(df)
+    if not all_frames:
+        logger.info("No fuel_tracker data found across any project")
+        # Write an empty marker parquet so loader knows there's no data
+        empty = pd.DataFrame(columns=list(fuel_tracker_loader.OUTPUT_COLS) +
+                              ["status", "lph_display", "project_id"])
+        FUEL_TRACKER_PARQUET.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            empty.to_parquet(FUEL_TRACKER_PARQUET, index=False)
+        except Exception:
+            pass
+        return
+    combined = pd.concat(all_frames, ignore_index=True, sort=False)
+
+    FUEL_TRACKER_PARQUET.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        combined.to_parquet(FUEL_TRACKER_PARQUET, index=False)
+        logger.info("Saved fuel_tracker parquet (%d rows) to %s",
+                    len(combined), FUEL_TRACKER_PARQUET)
+    except Exception as e:
+        logger.exception("Failed to save fuel_tracker parquet: %s", e)
+
+
+def load_fuel_tracker_data(project_id: str | None = None) -> pd.DataFrame:
+    """קורא fuel_tracker.parquet ומחזיר DataFrame מסונן לפרויקט.
+
+    משמש את הדשבורד (גם בענן וגם מקומית). Fallback ל-xlsx אם
+    הפרקט לא קיים — שימושי במצב פיתוח לפני הרצת build_master.
+    """
+    if FUEL_TRACKER_PARQUET.exists():
+        try:
+            df = pd.read_parquet(FUEL_TRACKER_PARQUET)
+            if project_id and "project_id" in df.columns:
+                df = df[df["project_id"] == project_id].reset_index(drop=True)
+            return df
+        except Exception as e:
+            logger.warning("Failed to load fuel_tracker parquet, falling back: %s", e)
+    # Fallback: read xlsx directly (slow, dev-only)
+    if project_id:
+        project_dir = PROJECTS_ROOT / project_id
+        site_name = _project_meta(project_id).get("site_name") or project_id
+        df = fuel_tracker_loader.load_fuel_tracker(project_dir, site_name=site_name)
+        return fuel_tracker_loader.apply_classification(df)
+    return pd.DataFrame(columns=list(fuel_tracker_loader.OUTPUT_COLS) +
+                         ["status", "lph_display", "project_id"])
 
 
 def _project_meta(project_id: str) -> dict:
@@ -594,6 +663,12 @@ def build_master() -> pd.DataFrame:
         build_fuel_invoices_parquet()
     except Exception as e:
         logger.exception("fuel_invoices parquet build failed (non-fatal): %s", e)
+
+    # Build fuel_tracker parquet (data/projects/<id>/מעקב סולר וטיפולים*.xlsx)
+    try:
+        build_fuel_tracker_parquet()
+    except Exception as e:
+        logger.exception("fuel_tracker parquet build failed (non-fatal): %s", e)
 
     # Sync projects + suppliers mirrors (non-fatal)
     try:

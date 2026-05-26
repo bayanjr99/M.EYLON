@@ -3,9 +3,11 @@ data/projects/*/
 
 # master.parquet (processed) is pushed so Streamlit Cloud renders the data.
 # site_tracking.parquet too (operational tracking from xlsx).
+# fuel_tracker.parquet too (rich fuel-log from "מעקב סולר וטיפולים" xlsx).
 # Repo MUST stay private — contains financial and operational data.
 # data/master.parquet         ← intentionally tracked
 # data/site_tracking.parquet  ← intentionally tracked
+# data/fuel_tracker.parquet   ← intentionally tracked
 
 # SQLite audit log — local-only working state, rebuilt on each build_master.
 data/audit.sqlite3
