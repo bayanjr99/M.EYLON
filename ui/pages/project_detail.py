@@ -3585,44 +3585,185 @@ def _append_fuel_total_row(disp: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([disp, total_df], ignore_index=True)
 
 
+_FUEL_TRACKER_COL_HEB = {
+    "date":         "תאריך",
+    "site":         "אתר",
+    "license_num":  "מס' רישוי",
+    "tool_name":    "שם כלי",
+    "owner":        "בעלים",
+    "liters":       "כמות סולר",
+    "engine_hours": "קריאת שעות מנוע",      # מצטבר, לא ל-חישוב
+    "work_hours":   "שעות עבודה מחושבות",   # ספירת שעות מנוע = delta
+    "lph_display":  "ליטר/שעה",
+    "status":       "סטטוס חריגה",
+    "notes":        "הערות",
+}
+
+# סדר העמודות לתצוגה (לפי spec 7)
+_FUEL_TRACKER_COL_ORDER = [
+    "date", "site", "license_num", "tool_name", "owner",
+    "liters", "engine_hours", "work_hours", "lph_display",
+    "status", "notes",
+]
+
+
+def _format_fuel_tracker_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """ממיר DataFrame של fuel_tracker לטבלת תצוגה.
+
+    - בוחר רק את העמודות הרלוונטיות
+    - שם עמודות בעברית
+    - שורות עם work_hours לא תקין → ליטר/שעה ריק (לא 0.0 מטעה)
+    """
+    if df.empty:
+        return df
+    out = df.copy()
+    # תאריך → datetime (לפורמט DateColumn ב-st.dataframe)
+    if "date" in out.columns:
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    # ודא שכל עמודות הסכמה קיימות
+    for c in _FUEL_TRACKER_COL_ORDER:
+        if c not in out.columns:
+            out[c] = pd.NA
+    # סנן רק לעמודות הרלוונטיות בסדר הנכון
+    out = out[_FUEL_TRACKER_COL_ORDER].copy()
+    # שמות עבריים
+    out.columns = [_FUEL_TRACKER_COL_HEB.get(c, c) for c in _FUEL_TRACKER_COL_ORDER]
+    return out
+
+
 def _subtab_fuel_usage(df: pd.DataFrame, project_meta: dict) -> None:
-    """שימוש בסולר בפועל - מתדלוקים ומיומן שטח."""
-    sec("שימוש בסולר", meta="תדלוקים בפועל לכלים")
+    """שימוש בסולר בפועל — קורא מ-"מעקב סולר וטיפולים — כלי צמה" (יומן סולר)."""
+    from pipeline import load_fuel_tracker_data
+
+    sec("שימוש בסולר", meta="תדלוקים בפועל לכלים (יומן שטח)")
+
+    project_id = project_meta["project_id"]
+
+    # ── מקור 1: דוח תדלוקים בפועל (Pointer/Delkan) — מ-master.parquet ──
     solar = df[df["source"] == "solar"] if "source" in df.columns else df.iloc[0:0]
-    from pipeline import load_site_tracking_data
-    site_fuel = load_site_tracking_data(project_meta["project_id"]).get("fuel", pd.DataFrame())
+    has_solar = not solar.empty and "liters" in solar.columns and \
+                float(solar["liters"].fillna(0).sum()) > 0
 
-    total_solar_l = float(solar["liters"].sum()) if "liters" in solar.columns and not solar.empty else 0
-    total_site_l = float(site_fuel["liters"].sum()) if "liters" in site_fuel.columns and not site_fuel.empty else 0
+    # ── מקור 2: יומן שטח עשיר — מ-fuel_tracker.parquet ──
+    tracker = load_fuel_tracker_data(project_id)
+    has_tracker = not tracker.empty
+    total_tracker_l = float(tracker["liters"].fillna(0).sum()) if has_tracker else 0.0
+    total_solar_l = float(solar["liters"].fillna(0).sum()) if has_solar else 0.0
+
+    # ── סיכום עליון (spec 13, 14) ──
     c1, c2, c3 = st.columns(3)
-    c1.metric("מדוח תדלוקים (ל')", format_number(total_solar_l))
-    c2.metric("מיומן שטח (ל')", format_number(total_site_l))
-    c3.metric("סה\"כ", format_number(total_solar_l + total_site_l))
+    with c1:
+        if has_solar:
+            st.metric("מדוח תדלוקים בפועל (ל')", format_number(total_solar_l))
+        else:
+            st.markdown(
+                '<div style="background:#FEF3C7;border:1px solid #FCD34D;'
+                'border-radius:8px;padding:10px 14px;text-align:center">'
+                '<div style="font-size:11px;color:#92400E;font-weight:600">'
+                'מדוח תדלוקים בפועל</div>'
+                '<div style="font-size:14px;color:#78350F;margin-top:4px">'
+                '⚠ לא הועלה דוח תדלוקים</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+    with c2:
+        if has_tracker:
+            st.metric("שימוש מיומן שטח (ל')", format_number(total_tracker_l))
+        else:
+            st.markdown(
+                '<div style="background:#FEF3C7;border:1px solid #FCD34D;'
+                'border-radius:8px;padding:10px 14px;text-align:center">'
+                '<div style="font-size:11px;color:#92400E;font-weight:600">'
+                'שימוש מיומן שטח</div>'
+                '<div style="font-size:14px;color:#78350F;margin-top:4px">'
+                'אין נתונים מיומן שטח</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+    with c3:
+        combined = total_solar_l + total_tracker_l
+        st.metric("סה\"כ שימוש מחושב (ל')", format_number(combined))
 
-    _FUEL_COL_HEB = {
-        "date": "תאריך", "tool_name": "שם כלי", "license_num": "מס' רישוי",
-        "liters": "ליטרים", "engine_hours": "שעות מנוע",
-        "lph_actual": "ל'/ש' בפועל", "notes": "הערות",
-    }
+    # ── סיכום מילולי מתחת ל-cards (spec 14) ──
+    summary_parts = []
+    if has_tracker:
+        summary_parts.append(f"שימוש מיומן שטח = **{format_number(total_tracker_l)}** ל'")
+    if has_solar:
+        summary_parts.append(f"דוח תדלוקים בפועל = **{format_number(total_solar_l)}** ל'")
+    else:
+        summary_parts.append("דוח תדלוקים בפועל = **לא נטען**")
+    if has_tracker or has_solar:
+        summary_parts.append(f"סה\"כ שימוש מחושב = **{format_number(combined)}** ל'")
+    if summary_parts:
+        st.markdown(
+            '<div style="background:#F0FDF4;border:1px solid #BBF7D0;'
+            'border-radius:8px;padding:10px 14px;margin-top:6px;font-size:12px">'
+            + ' &nbsp;·&nbsp; '.join(summary_parts) + '</div>',
+            unsafe_allow_html=True,
+        )
 
-    if not solar.empty:
-        sec("תדלוקים מדוח תדלוקים")
+    # ── מידע על מקורות הנתונים (spec 12) ──
+    if has_tracker:
+        st.caption(
+            "📋 **מקורות הנתונים בטבלה:**  "
+            "ליטרים → עמודה 'כמות סולר (ל')'  ·  "
+            "קריאת מונה → 'שעות מנוע'  ·  "
+            "שעות עבודה בפועל → 'ספירת שעות מנוע'  ·  "
+            "ליטר/שעה → 'צריכה מסוננת (ל'/ש')' (או 'צריכה לשעה' כ-fallback). "
+            "**שעות מנוע** היא קריאת מונה מצטברת — לא משתמשים בה לחישוב צריכה."
+        )
+
+    # ── הטבלה הראשית: תדלוקים מיומן שטח (spec 7, 8, 9) ──
+    if has_tracker:
+        sec("תדלוקים מיומן שטח",
+            meta=f"{len(tracker):,} שורות · מקובץ 'מעקב סולר וטיפולים — כלי צמה'")
+        disp = _format_fuel_tracker_for_display(tracker.sort_values("date"))
+        disp = _append_fuel_total_row(disp)
+        display_dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── טבלת חריגות (spec 15) ──
+    if has_tracker and "status" in tracker.columns:
+        from core.fuel_tracker_loader import is_anomaly_status
+        anom_mask = tracker["status"].apply(is_anomaly_status)
+        anomalies = tracker[anom_mask]
+        n_anom = len(anomalies)
+        if n_anom > 0:
+            sec(
+                f"⚠ שורות הדורשות בדיקה ({n_anom:,})",
+                meta="קריאת מונה ריקה / ספירה שלילית / קפיצה גדולה / צריכה לא הגיונית / חסר רישוי",
+            )
+            anom_summary = anomalies["status"].value_counts()
+            ins(
+                "amber", "⚠️",
+                f"זוהו {n_anom:,} שורות מתוך {len(tracker):,} ({n_anom*100/len(tracker):.1f}%) הדורשות בדיקה ידנית.",
+                "<br>".join(f"• <code>{s}</code>: {c}" for s, c in anom_summary.items()),
+            )
+            disp_anom = _format_fuel_tracker_for_display(anomalies.sort_values("date"))
+            display_dataframe(disp_anom, use_container_width=True, hide_index=True)
+        else:
+            ins("green", "✓",
+                "אין חריגות בנתוני התדלוק",
+                f"כל {len(tracker):,} השורות עברו את בדיקות התקינות.")
+
+    # ── הטבלה הישנה של "מדוח תדלוקים" — רק אם יש נתונים ──
+    if has_solar:
+        sec("תדלוקים מדוח תדלוקים בפועל (Pointer / Delkan)")
         cols = [c for c in ["date", "tool_name", "license_num", "liters", "engine_hours"]
                 if c in solar.columns]
         disp = solar[cols].copy().sort_values("date" if "date" in cols else cols[0])
-        disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
+        heb = {"date": "תאריך", "tool_name": "שם כלי", "license_num": "מס' רישוי",
+               "liters": "ליטרים", "engine_hours": "קריאת שעות מנוע"}
+        disp.columns = [heb.get(c, c) for c in cols]
         disp = _append_fuel_total_row(disp)
         display_dataframe(disp, use_container_width=True, hide_index=True)
 
-    if not site_fuel.empty:
-        sec("תדלוקים מיומן שטח")
-        cols = [c for c in ["date", "tool_name", "license_num", "liters",
-                            "engine_hours", "lph_actual", "notes"]
-                if c in site_fuel.columns]
-        disp = site_fuel[cols].copy().sort_values("date" if "date" in cols else cols[0])
-        disp.columns = [_FUEL_COL_HEB.get(c, c) for c in cols]
-        disp = _append_fuel_total_row(disp)
-        display_dataframe(disp, use_container_width=True, hide_index=True)
+    # ── אם אין שום נתון ──
+    if not has_tracker and not has_solar:
+        ins("blue", "ℹ️",
+            "אין נתוני שימוש בסולר",
+            "וודא ש-`data/projects/<id>/מעקב סולר וטיפולים — כלי צמה.xlsx` קיים "
+            "(או קבצי `solar.xlsx` במחיצות החודשיות), ולאחר מכן הרץ "
+            "<code>python -c \"from pipeline import build_master; build_master()\"</code>.")
 
 
 # ─── סולר וכלים → מלאי סולר (Step 4) ───────────────────────
