@@ -115,11 +115,21 @@ def detect_solar_without_hours(
     if df_solar_monthly.empty:
         return pd.DataFrame(columns=cols)
 
-    merged = df_solar_monthly.merge(
-        df_hours_monthly[["license_num", "month", "total_work_hours"]],
-        on=["license_num", "month"],
-        how="left",
+    # שעות עבודה עשויות להיות ריקות לגמרי (למשל חודש עם הזנת סולר ידנית
+    # בלבד). במקרה כזה אין DataFrame עם עמודות — מתייחסים ל-0 שעות לכל כלי.
+    has_hours = (
+        not df_hours_monthly.empty
+        and {"license_num", "month", "total_work_hours"}.issubset(df_hours_monthly.columns)
     )
+    if has_hours:
+        merged = df_solar_monthly.merge(
+            df_hours_monthly[["license_num", "month", "total_work_hours"]],
+            on=["license_num", "month"],
+            how="left",
+        )
+    else:
+        merged = df_solar_monthly.copy()
+        merged["total_work_hours"] = 0
     merged["total_work_hours"] = merged["total_work_hours"].fillna(0)
     merged = merged.merge(
         tools_registry[["license_num", "tool_type"]],

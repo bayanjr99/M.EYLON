@@ -142,6 +142,17 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
     st.caption(f"במאגר כעת: {len(existing):,} שורות · כל שורה משויכת לחודש לפי "
                "התאריך שבה — אין צורך למלא חודש בכל שורה.")
 
+    # ── תוצאת השמירה האחרונה (שורדת rerun; מוצגת בכל שלב) ──
+    res = st.session_state.get(f"{base}_save_result")
+    if res:
+        _render_save_result(kind, res)
+        if st.button("➕ הזנה נוספת / נקה הודעה", key=f"{base}_clear_result"):
+            st.session_state.pop(f"{base}_save_result", None)
+            st.rerun()
+
+    # ── היסטוריית הזנות ידניות ──
+    _render_history(kind, project_id)
+
     raw = st.session_state.get(raw_key)
     have_raw = isinstance(raw, pd.DataFrame) and not raw.empty
     have_seed = isinstance(st.session_state.get(seed_key), pd.DataFrame)
@@ -315,20 +326,126 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
     if st.button(f"✅ שמור {summary['valid_count']} שורות תקינות",
                  type="primary", use_container_width=True,
                  disabled=not can_save, key=f"{base}_save"):
-        with st.spinner("שומר נתונים ובונה מאסטר מחדש..."):
+        _do_save(kind, project_id, project_name, edited, mode_key, target_month, base)
+
+
+def _do_save(kind: str, project_id: str, project_name: str,
+             edited: pd.DataFrame, mode_key: str, target_month: str,
+             base: str) -> None:
+    """מבצע שמירה + בנייה מחדש + אימות אמיתי. שומר תוצאה ב-state.
+
+    מציג 'נשמר' רק אם האימות עבר: השורות נקראו חזרה מהמאגר *וגם*
+    מופיעות ב-master.parquet בחודשים הנכונים.
+    """
+    from core import db
+    from pipeline import verify_manual_in_master
+
+    kind_label = manual_store.KINDS[kind]["label"]
+    result: dict = {"ok": False, "kind_label": kind_label,
+                    "project_name": project_name}
+    try:
+        with st.spinner("שומר נתונים, מגבה, ובונה מאסטר מחדש..."):
             applied = manual_store.apply_import(
                 project_id, kind, edited, mode_key,
                 source_file="הזנה ידנית", target_month=target_month)
+            saved_months = applied.get("saved_months", [])
+            store_ok = bool(applied.get("saved")) and bool(applied.get("verified_ok"))
+
+            # בנייה מחדש של master + ניקוי קאש כדי שהדשבורד יתעדכן
+            build_master()
+            st.cache_data.clear()
+
+            # אימות אמיתי: האם השורות הגיעו ל-master.parquet בדיסק
+            master_chk = verify_manual_in_master(project_id, kind, saved_months)
+
+            ok = store_ok and master_chk["ok"]
+            result.update({
+                "ok": ok,
+                "saved_count": applied.get("saved_count", applied.get("valid_count", 0)),
+                "verified_rows": applied.get("verified_rows", 0),
+                "store_after": applied.get("store_after", 0),
+                "store_path": applied.get("store_path", ""),
+                "months": saved_months,
+                "rows_in_master": master_chk["rows_in_master"],
+                "months_found": master_chk["months_found"],
+            })
+            status = "approved" if ok else "failed"
             try:
                 db.log_import(project_id, project_name, f"manual_{kind}",
                               "הזנה ידנית", target_month, "ידני", mode_key,
-                              applied, "approved")
+                              applied, status)
             except Exception as e:
                 logger.warning("log_import failed (non-fatal): %s", e)
-            build_master()
-            st.cache_data.clear()
-        st.success(f"נשמרו {applied['valid_count']:,} שורות תקינות — הדשבורד עודכן.")
+    except Exception as e:
+        logger.exception("manual save failed: %s", e)
+        result["error"] = str(e)
+
+    st.session_state[f"{base}_save_result"] = result
+    if result["ok"]:
+        # שמירה הצליחה ואומתה — נקה את הטופס לקראת הזנה הבאה
         _reset_state(base)
+    st.rerun()
+
+
+def _render_save_result(kind: str, res: dict) -> None:
+    """מציג תוצאת שמירה מאומתת — הצלחה אמיתית או שגיאה מפורטת."""
+    kind_label = res.get("kind_label", kind)
+    if not res.get("ok"):
+        err = res.get("error")
+        if err:
+            ins("red", "⛔", "השמירה נכשלה — הנתונים לא נשמרו",
+                f"שגיאה: {err}. גובה גיבוי של המאגר הקודם (קובץ .bak). "
+                "נסה שוב או בדוק את הקובץ.")
+        else:
+            ins("red", "⛔", "השמירה לא אומתה — ייתכן שהנתונים לא נשמרו",
+                f"נכתבו {res.get('verified_rows', 0):,} שורות במאגר אך "
+                f"נמצאו {res.get('rows_in_master', 0):,} שורות ב-master "
+                "לחודשים שנשמרו. אל תסמוך על שמירה זו — נסה שוב.")
+        return
+    months = ", ".join(res.get("months", [])) or "—"
+    proj = res.get("project_name", "")
+    st.success(
+        f"✅ נשמרו ואומתו {res.get('saved_count', 0):,} שורות {kind_label} "
+        f"לחודש {months} בפרויקט {proj}.")
+    ins("green", "✔️", "אימות מלא עבר בהצלחה",
+        f"מאגר: {res.get('verified_rows', 0):,} שורות נקראו חזרה מהדיסק · "
+        f"master: {res.get('rows_in_master', 0):,} שורות ל-{kind_label} "
+        f"בחודשים {', '.join(res.get('months_found', [])) or '—'} · "
+        "הדשבורד עודכן — הנתונים יופיעו בכל הטאבים והגרפים.")
+    st.caption(f"מיקום המאגר: {res.get('store_path', '')}")
+
+
+def _render_history(kind: str, project_id: str) -> None:
+    """מציג היסטוריית הזנות ידניות מתוך לוג היבוא (db.import_history)."""
+    from core import db
+    with st.expander("📜 היסטוריית הזנות ידניות", expanded=False):
+        try:
+            hist = db.import_history(project_id, limit=50)
+        except Exception as e:
+            st.caption(f"לא ניתן לטעון היסטוריה: {e}")
+            return
+        if hist.empty:
+            st.caption("אין עדיין הזנות ידניות מתועדות לפרויקט זה.")
+            return
+        # רק הזנות ידניות (source = 'ידני')
+        if "source" in hist.columns:
+            hist = hist[hist["source"] == "ידני"]
+        if hist.empty:
+            st.caption("אין עדיין הזנות ידניות מתועדות לפרויקט זה.")
+            return
+        cols = {
+            "timestamp": "תאריך הזנה", "report_type": "סוג דוח",
+            "project_name": "פרויקט", "months_affected": "חודשים",
+            "new_rows": "שורות חדשות", "duplicate_rows": "כפילויות",
+            "mode": "אופן", "status": "סטטוס",
+        }
+        show = [c for c in cols if c in hist.columns]
+        disp = hist[show].rename(columns=cols)
+        if "סטטוס" in disp.columns:
+            disp["סטטוס"] = disp["סטטוס"].map(
+                {"approved": "✅ נשמר", "failed": "⛔ נכשל",
+                 "checked": "🔍 נבדק"}).fillna(disp["סטטוס"])
+        st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 def _reset_state(base: str) -> None:

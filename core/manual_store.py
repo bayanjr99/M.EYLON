@@ -477,15 +477,43 @@ def load_store(project_id: str, kind: str) -> pd.DataFrame:
         return empty_frame(kind)
 
 
-def save_store(project_id: str, kind: str, df: pd.DataFrame) -> None:
-    """שומר את המאגר ל-parquet."""
+def _backup_store(path: Path) -> None:
+    """גיבוי המאגר הקיים ל-<file>.bak לפני דריסה (בטיחות)."""
+    if not path.exists():
+        return
+    try:
+        import shutil
+        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+    except Exception as e:  # גיבוי כושל לא חוסם שמירה
+        logger.warning("Backup of %s failed (non-fatal): %s", path, e)
+
+
+def save_store(project_id: str, kind: str, df: pd.DataFrame) -> int:
+    """שומר את המאגר ל-parquet, מגבה קודם, ומאמת ע"י קריאה חוזרת.
+
+    מחזיר את מספר השורות שנקראו חזרה מהדיסק (אימות אמיתי).
+    זורק RuntimeError אם השמירה נכשלה — כדי שה-UI לא יציג 'נשמר' בטעות.
+    """
     path = _store_path(project_id, kind)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _backup_store(path)
     try:
         df.to_parquet(path, index=False)
-        logger.info("Saved manual %s store (%d rows) to %s", kind, len(df), path)
     except Exception as e:
         logger.exception("Failed to save manual %s store %s: %s", kind, path, e)
+        raise RuntimeError(f"שמירת המאגר נכשלה: {e}") from e
+    # ── אימות: קריאה חוזרת מהדיסק וספירה ──
+    try:
+        reread = pd.read_parquet(path)
+    except Exception as e:
+        logger.exception("Read-back verification failed for %s: %s", path, e)
+        raise RuntimeError(f"אימות השמירה נכשל (קריאה חוזרת): {e}") from e
+    if len(reread) != len(df):
+        raise RuntimeError(
+            f"אימות השמירה נכשל: נכתבו {len(df)} שורות אך נקראו {len(reread)}.")
+    logger.info("Saved + verified manual %s store (%d rows) to %s",
+                kind, len(reread), path)
+    return len(reread)
 
 
 def delete_store(project_id: str, kind: str) -> bool:
@@ -660,6 +688,10 @@ def apply_import(project_id: str, kind: str, incoming: pd.DataFrame,
     mode == "check_only" אינו שומר דבר. רק שורות תקינות נשמרות.
     """
     summary = analyze(project_id, kind, incoming, mode, target_month)
+    summary["saved"] = False
+    summary["verified_rows"] = 0
+    summary["verified_ok"] = False
+    summary["store_path"] = str(_store_path(project_id, kind))
     if mode == "check_only":
         return summary
 
@@ -668,7 +700,11 @@ def apply_import(project_id: str, kind: str, incoming: pd.DataFrame,
         return summary
     valid_mask = validate_incoming(kind, prepared)
     valid = prepared[valid_mask].copy()
+    # ── בטיחות: לעולם לא לגעת במאגר כשאין שורות תקינות ──
+    # מונע ש-replace_month ימחק חודש שלם כשהקלט ריק מתוקף.
     if valid.empty:
+        logger.warning("apply_import aborted: 0 valid rows (mode=%s) — store untouched",
+                       mode)
         return summary
 
     valid["import_date"] = datetime.now().strftime("%Y-%m-%d")
@@ -697,6 +733,12 @@ def apply_import(project_id: str, kind: str, incoming: pd.DataFrame,
     if "row_hash" in merged.columns:
         merged = merged.drop_duplicates(subset=["row_hash"], keep="last")
     merged = merged.reset_index(drop=True)
-    save_store(project_id, kind, merged)
+    # save_store מאמת ע"י קריאה חוזרת וזורק אם נכשל
+    verified = save_store(project_id, kind, merged)
     summary["store_after"] = len(merged)
+    summary["verified_rows"] = verified
+    summary["verified_ok"] = (verified == len(merged))
+    summary["saved"] = True
+    summary["saved_months"] = sorted(valid["month"].dropna().unique().tolist())
+    summary["saved_count"] = int(len(valid))
     return summary

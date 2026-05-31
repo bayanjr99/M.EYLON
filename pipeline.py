@@ -913,6 +913,37 @@ def load_master() -> pd.DataFrame:
     return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
 
 
+def verify_manual_in_master(project_id: str, kind: str,
+                            months: list[str]) -> dict:
+    """אימות שהנתונים הידניים אכן הגיעו ל-master.parquet (קריאה מהדיסק).
+
+    קורא מחדש את master.parquet מהדיסק (לא מהקאש), ומספר את שורות
+    ה-source הרלוונטי (solar/hours) לפרויקט בחודשים שנשמרו.
+
+    מחזיר: {"rows_in_master": int, "months_found": [..], "ok": bool}
+    """
+    source = "solar" if kind == "solar" else "hours"
+    result = {"rows_in_master": 0, "months_found": [], "ok": False}
+    if not MASTER_PARQUET.exists():
+        return result
+    try:
+        m = pd.read_parquet(MASTER_PARQUET)
+    except Exception as e:
+        logger.exception("verify_manual_in_master read failed: %s", e)
+        return result
+    if m.empty or "source" not in m.columns:
+        return result
+    sel = (m["project_id"] == project_id) & (m["source"] == source)
+    if months:
+        sel &= m["month"].isin(months)
+    sub = m[sel]
+    result["rows_in_master"] = int(len(sub))
+    result["months_found"] = sorted(sub["month"].dropna().unique().tolist())
+    # תקין אם נמצאו שורות בכל חודש שנשמר
+    result["ok"] = bool(months) and all(mo in result["months_found"] for mo in months)
+    return result
+
+
 def run_month(project_id: str, month: str) -> pd.DataFrame:
     """End-to-end לחודש בודד: load → aggregate → detect anomalies.
 
