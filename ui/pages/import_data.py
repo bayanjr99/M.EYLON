@@ -9,11 +9,14 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 from pathlib import Path
 
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 from pipeline import PROJECTS_ROOT, build_master, list_available_months
 from ui.components import empty_state, ins, sec
@@ -595,7 +598,17 @@ def _render_import_history(projects: list[dict]) -> None:
     if pick != "כל הפרויקטים":
         pid = next(p["project_id"] for p in projects if p["project_name"] == pick)
 
-    hist = db.import_history(pid)
+    if not hasattr(db, "import_history"):
+        empty_state(icon="ti-history-off", title="היסטוריית היבוא אינה זמינה כעת",
+                    body_html="המערכת מתעדכנת — נסה לרענן את הדף בעוד רגע.")
+        return
+    try:
+        hist = db.import_history(pid)
+    except Exception:
+        logger.exception("import_history failed")
+        empty_state(icon="ti-history-off", title="לא ניתן לטעון את היסטוריית היבוא",
+                    body_html="אירעה שגיאה בקריאת ההיסטוריה. נסה לרענן את הדף.")
+        return
     if hist is None or hist.empty:
         empty_state(icon="ti-history-off", title="אין עדיין היסטוריית יבוא",
                     body_html="לאחר יבוא דוח ראשון, הוא יופיע כאן.")
