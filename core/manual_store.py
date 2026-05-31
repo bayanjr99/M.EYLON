@@ -3,13 +3,13 @@
 רעיון מרכזי
 -----------
 במקום להעלות קובץ אקסל ולבנות פורמט חדש בכל פעם, המשתמש מדביק נתונים
-ישירות לטבלה במערכת (st.data_editor). כל שורה מקבלת ``row_hash`` ייחודי
-והמערכת:
-    • מזהה שורות חדשות (hash שלא קיים) ומוסיפה אותן.
-    • מדלגת על כפילויות (hash שכבר קיים).
-    • מזהה שורות שהשתנו (אותו מפתח לוגי, ערכים שונים) למצב "עדכן".
-    • מסווגת כל שורה לחודש לפי *תאריך השורה* ולא לפי מועד ההזנה.
-    • מחשבת אוטומטית סכום כולל (כמות × מחיר) וסה"כ שעות אם חסרים.
+ישירות (TSV מאקסל). המערכת מזהה את העמודות אוטומטית (או נותנת למפות אותן
+ידנית), בודקת שגיאות שורה-שורה, ושומרת רק שורות תקינות:
+    • מזהה שורות חדשות (row_hash שלא קיים) ומוסיפה אותן.
+    • מדלגת על כפילויות (row_hash שכבר קיים).
+    • מזהה שורות שהשתנו (אותו key_hash, ערכים שונים) למצב "עדכן".
+    • מסווגת כל שורה לחודש לפי *תאריך השורה* — אין צורך למלא חודש ידנית.
+    • מחשבת אוטומטית סכום/מחיר-לליטר/סה"כ שעות אם חסרים.
 
 המאגר נשמר כ-parquet בתיקיית הפרויקט:
     data/projects/<project_id>/_manual_solar_store.parquet
@@ -33,11 +33,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils import hebrew
+
 logger = logging.getLogger(__name__)
 
 
 # ── סוגי דלק לבחירה בדוח סולר ──────────────────────────────────
 FUEL_TYPES = ["סולר צמ\"ה", "סולר רכבים", "בנזין", "חשמל"]
+FUEL_DEFAULT = "לא סווג"
 
 
 # ── הגדרת העמודות לכל סוג דוח ───────────────────────────────────
@@ -58,13 +61,17 @@ KINDS: dict[str, dict] = {
             ("amount", "סכום כולל", "float"),
             ("notes", "הערות", "text"),
         ],
-        "required": ["date", "liters"],
+        # תאריך חובה + לפחות אחד מ-(ליטרים / סכום)
+        "required_all": ["date"],
+        "required_any": [["liters", "amount"]],
+        # חוסר באלה = אזהרה בלבד (לא חוסם שמירה)
+        "warn_any": [["tool_name", "license_num"], ["supplier", "invoice_num"]],
         # מפתח כפילות מלא (כולל סכומים)
         "hash_fields": ["date", "license_num", "supplier", "invoice_num",
                         "liters", "amount"],
         # מפתח לוגי (ללא סכומים) — לזיהוי "שורה שהשתנתה"
         "key_fields": ["date", "license_num", "supplier", "invoice_num"],
-        "select_options": {"fuel_type": FUEL_TYPES},
+        "select_options": {"fuel_type": FUEL_TYPES + [FUEL_DEFAULT]},
     },
     "hours": {
         "label": "שעות עבודה",
@@ -85,7 +92,10 @@ KINDS: dict[str, dict] = {
             ("total_cost", "סה\"כ עלות", "float"),
             ("notes", "הערות", "text"),
         ],
-        "required": ["date", "employee_name"],
+        "required_all": ["date", "employee_name"],
+        "required_any": [["total_hours", "regular_hours", "ot_125",
+                          "ot_150", "ot_175", "ot_200"]],
+        "warn_any": [["site"]],
         "hash_fields": ["date", "employee_name", "site", "regular_hours",
                         "ot_125", "ot_150", "ot_175", "ot_200", "total_hours"],
         "key_fields": ["date", "employee_name", "site", "work_type"],
@@ -93,14 +103,63 @@ KINDS: dict[str, dict] = {
     },
 }
 
-# עמודות שעות נוספות לחישוב סה"כ אוטומטי
+# עמודות שעות (לחישוב סה"כ אוטומטי)
 _OT_COLS = ["regular_hours", "ot_125", "ot_150", "ot_175", "ot_200"]
 
 # עמודות שירות (לא חלק מהקלט אך נשמרות במאגר)
 STORE_META_COLS = ["row_hash", "key_hash", "month", "import_date", "source_file"]
 
 
-# ── עזרי נורמליזציה ────────────────────────────────────────────
+# ── וריאציות שמות עמודות לזיהוי אוטומטי בעת הדבקה ──────────────
+# המפתח = שדה במערכת, הערך = רשימת וריאציות אפשריות בכותרת מאקסל.
+COLUMN_SYNONYMS: dict[str, dict[str, list[str]]] = {
+    "solar": {
+        "date": ["תאריך", "תאריך פעולה", "תאריך תדלוק", "ת. אסמכתא",
+                 "תאריך אסמכתא", "יום", "date"],
+        "license_num": ["מספר כלי", "מספר רכב", "מס כלי", "מס רכב", "מס' כלי",
+                        "מס' רכב", "כלי", "רכב", "מספר רישוי", "רישוי",
+                        "license", "license_num"],
+        "tool_name": ["שם כלי", "שם רכב", "שם הכלי", "תיאור כלי", "כלי / רכב",
+                      "שם כלי / רכב", "תיאור", "tool", "tool_name"],
+        "fuel_type": ["סוג דלק", "דלק", "סוג", "fuel", "fuel_type"],
+        "supplier": ["ספק", "תחנה", "שם ספק", "תחנת דלק", "supplier"],
+        "invoice_num": ["מספר חשבונית", "חשבונית", "אסמכתא", "מסמך",
+                        "מס חשבונית", "מס' חשבונית", "חשבונית / אסמכתא",
+                        "invoice", "reference", "invoice_num"],
+        "liters": ["כמות ליטרים", "ליטרים", "כמות", "כמות דלק", "ליטר",
+                   "liters", "litre", "litres"],
+        "price_per_liter": ["מחיר לליטר", "מחיר ליטר", "מחיר יחידה", "מחיר",
+                            "price", "price_per_liter"],
+        "amount": ["סכום כולל", "סכום", "עלות", "חובה", "סהכ", "סה\"כ",
+                   "סך הכל", "סך הכול", "total", "amount"],
+        "notes": ["הערות", "הערה", "פירוט", "notes"],
+    },
+    "hours": {
+        "date": ["תאריך", "תאריך עבודה", "יום", "date"],
+        "employee_name": ["שם עובד", "שם העובד", "שם", "עובד", "employee",
+                          "name", "employee_name"],
+        "employee_id": ["ת.ז", "תז", "ת\"ז", "מספר עובד", "מס עובד",
+                        "מס' עובד", "תעודת זהות", "id", "employee_id"],
+        "site": ["אתר", "מקום עבודה", "אתר עבודה", "מיקום", "site"],
+        "work_type": ["סוג עבודה", "תפקיד", "עבודה", "work", "work_type"],
+        "regular_hours": ["שעות רגילות 100%", "שעות רגילות", "רגילות",
+                          "שעות 100%", "100%", "שעות רגילה", "regular"],
+        "ot_125": ["שעות נוספות 125%", "נוספות 125%", "125%", "125", "ot 125"],
+        "ot_150": ["שעות נוספות 150%", "נוספות 150%", "150%", "150", "ot 150"],
+        "ot_175": ["שעות נוספות 175%", "נוספות 175%", "175%", "175", "ot 175"],
+        "ot_200": ["שעות נוספות 200%", "נוספות 200%", "200%", "200", "ot 200"],
+        "total_hours": ["סה\"כ שעות", "סהכ שעות", "סך שעות", "שעות",
+                        "total hours", "total_hours"],
+        "cost_per_hour": ["עלות לשעה", "מחיר לשעה", "תעריף", "תעריף לשעה",
+                          "cost", "cost_per_hour"],
+        "total_cost": ["סה\"כ עלות", "סהכ עלות", "עלות כוללת", "עלות כולל",
+                       "total cost", "total_cost"],
+        "notes": ["הערות", "הערה", "notes"],
+    },
+}
+
+
+# ── עזרי עמודות ────────────────────────────────────────────────
 def column_keys(kind: str) -> list[str]:
     """מחזיר את רשימת מפתחות העמודות (באנגלית) לסוג דוח."""
     return [c[0] for c in KINDS[kind]["columns"]]
@@ -119,14 +178,51 @@ def column_kind(kind: str, key: str) -> str:
     return "text"
 
 
+# ── נורמליזציה ─────────────────────────────────────────────────
+def _to_float(val) -> float | None:
+    """המרה בטוחה ל-float; None אם ריק/לא מספרי. מנקה פסיקים ו-₪."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s:
+        return None
+    cleaned = (s.replace(",", "").replace("₪", "").replace("%", "")
+               .replace("‏", "").replace("‎", "").strip())
+    if cleaned in ("", "-", "nan", "nat", "none"):
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _to_date_series(s: pd.Series) -> pd.Series:
+    """ממיר Series לתאריכים — תומך ב-31/05/2026 וגם 31.05.2026 / 31-05-2026."""
+    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if dt.isna().any():
+        try:
+            txt = s.astype(str)
+        except Exception:
+            return dt
+        mask = dt.isna() & txt.str.strip().ne("") & txt.str.lower().ne("nan")
+        if mask.any():
+            alt = (txt[mask].str.replace(".", "/", regex=False)
+                   .str.replace("-", "/", regex=False))
+            dt.loc[mask] = pd.to_datetime(alt, errors="coerce", dayfirst=True)
+    return dt
+
+
 def _norm_num(val) -> str:
     """מנרמל מספר לייצוג עקבי ל-hash (2 ספרות אחרי הנקודה)."""
-    try:
-        if val is None or pd.isna(val):
-            return "0.00"
-        return f"{float(val):.2f}"
-    except (TypeError, ValueError):
-        return "0.00"
+    f = _to_float(val)
+    return f"{f:.2f}" if f is not None else "0.00"
 
 
 def _norm_date(val) -> str:
@@ -172,9 +268,88 @@ def compute_key_hash(kind: str, row: dict) -> str:
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
 
+# ── זיהוי עמודות אוטומטי + מיפוי ───────────────────────────────
+def _match_field(kind: str, header_cell: str) -> tuple[str | None, int]:
+    """מחזיר (field, score) להתאמה הטובה ביותר של כותרת לשדה במערכת.
+
+    score = אורך הווריאציה שהותאמה (ארוך יותר = ספציפי יותר). 0 אם אין.
+    """
+    norm_h = hebrew.normalize(str(header_cell or ""))
+    if not norm_h:
+        return None, 0
+    best_field, best_score = None, 0
+    for field, syns in COLUMN_SYNONYMS[kind].items():
+        for syn in syns:
+            ns = hebrew.normalize(syn)
+            if not ns:
+                continue
+            if ns == norm_h or ns in norm_h or norm_h in ns:
+                score = len(ns)
+                if score > best_score:
+                    best_field, best_score = field, score
+    return best_field, best_score
+
+
+def detect_header(kind: str, raw: pd.DataFrame) -> bool:
+    """האם השורה הראשונה היא כותרת? (התאמה של ≥2 תאים לשמות שדות)."""
+    if raw.empty:
+        return False
+    first = raw.iloc[0].tolist()
+    matches = sum(1 for cell in first if _match_field(kind, str(cell))[0])
+    # ובנוסף: התא הראשון אינו תאריך תקין (כותרת אמיתית)
+    looks_like_data_date = not pd.isna(
+        pd.to_datetime(str(first[0]) if first else "", errors="coerce",
+                       dayfirst=True))
+    return matches >= 2 and not looks_like_data_date
+
+
+def guess_mapping(kind: str, header: list[str] | None) -> dict[str, int | None]:
+    """מנחש מיפוי field→מספר עמודת מקור לפי שמות הכותרות.
+
+    אם אין כותרות (header=None) → מיפוי לפי סדר עמודות ברירת המחדל.
+    מבטיח שכל עמודת מקור משויכת לכל היותר לשדה אחד (greedy לפי score).
+    """
+    keys = column_keys(kind)
+    if not header:
+        return {k: (i if i < 999 else None) for i, k in enumerate(keys)}
+
+    # אסוף מועמדים (field, col_idx, score)
+    cands: list[tuple[str, int, int]] = []
+    for idx, cell in enumerate(header):
+        field, score = _match_field(kind, str(cell))
+        if field and score > 0:
+            cands.append((field, idx, score))
+    cands.sort(key=lambda t: t[2], reverse=True)
+
+    mapping: dict[str, int | None] = {k: None for k in keys}
+    used_cols: set[int] = set()
+    for field, idx, _score in cands:
+        if mapping.get(field) is None and idx not in used_cols:
+            mapping[field] = idx
+            used_cols.add(idx)
+    return mapping
+
+
+def apply_mapping(kind: str, raw: pd.DataFrame,
+                  mapping: dict[str, int | None],
+                  has_header: bool) -> pd.DataFrame:
+    """בונה DataFrame בעמודות המערכת מתוך טבלה גולמית (מיקומית) + מיפוי."""
+    body = raw.iloc[1:] if has_header and len(raw) > 1 else raw
+    body = body.reset_index(drop=True)
+    out = {}
+    ncols = body.shape[1]
+    for field in column_keys(kind):
+        idx = mapping.get(field)
+        if idx is not None and 0 <= idx < ncols:
+            out[field] = body.iloc[:, idx].values
+        else:
+            out[field] = [None] * len(body)
+    return pd.DataFrame(out)
+
+
 # ── חישובים אוטומטיים ──────────────────────────────────────────
 def _autocompute_row(kind: str, row: dict) -> dict:
-    """ממלא ערכים חסרים: סכום כולל (סולר), סה"כ שעות/עלות (שעות)."""
+    """ממלא ערכים חסרים: סכום/מחיר (סולר), סה"כ שעות/עלות (שעות)."""
     out = dict(row)
     if kind == "solar":
         liters = _to_float(out.get("liters"))
@@ -182,6 +357,11 @@ def _autocompute_row(kind: str, row: dict) -> dict:
         amount = _to_float(out.get("amount"))
         if (amount is None or amount == 0) and liters and price:
             out["amount"] = round(liters * price, 2)
+        elif (price is None or price == 0) and amount and liters:
+            out["price_per_liter"] = round(amount / liters, 4)
+        # ברירת מחדל לסוג דלק
+        if not _norm_text(out.get("fuel_type")):
+            out["fuel_type"] = FUEL_DEFAULT
     elif kind == "hours":
         total = _to_float(out.get("total_hours"))
         if total is None or total == 0:
@@ -197,27 +377,6 @@ def _autocompute_row(kind: str, row: dict) -> dict:
     return out
 
 
-def _to_float(val) -> float | None:
-    """המרה בטוחה ל-float; None אם ריק/לא מספרי."""
-    if val is None:
-        return None
-    try:
-        if pd.isna(val):
-            return None
-    except (TypeError, ValueError):
-        pass
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        if isinstance(val, str):
-            cleaned = val.replace(",", "").replace("₪", "").strip()
-            try:
-                return float(cleaned)
-            except ValueError:
-                return None
-        return None
-
-
 def _coerce_types(kind: str, df: pd.DataFrame) -> pd.DataFrame:
     """ממיר את עמודות ה-DataFrame לטיפוסים הנכונים לפי הגדרת ה-kind."""
     df = df.copy()
@@ -226,10 +385,12 @@ def _coerce_types(kind: str, df: pd.DataFrame) -> pd.DataFrame:
             df[key] = pd.NA
             continue
         if ckind == "date":
-            df[key] = pd.to_datetime(df[key], errors="coerce", dayfirst=True)
+            df[key] = _to_date_series(df[key])
         elif ckind == "int":
+            df[key] = df[key].apply(_to_float)
             df[key] = pd.to_numeric(df[key], errors="coerce").astype("Int64")
         elif ckind == "float":
+            df[key] = df[key].apply(_to_float)
             df[key] = pd.to_numeric(df[key], errors="coerce")
         else:  # text / select
             df[key] = df[key].apply(_norm_text)
@@ -243,46 +404,45 @@ def empty_frame(kind: str) -> pd.DataFrame:
     return _coerce_types(kind, df)
 
 
-def prepare_incoming(kind: str, df: pd.DataFrame) -> pd.DataFrame:
-    """מנקה קלט גולמי מה-editor: מסיר שורות ריקות, ממיר טיפוסים,
+def _is_blank_row(values) -> bool:
+    """True אם כל התאים בשורה ריקים/NA."""
+    for v in values:
+        if v is None:
+            continue
+        try:
+            if pd.isna(v):
+                continue
+        except (TypeError, ValueError):
+            pass
+        if isinstance(v, str) and not v.strip():
+            continue
+        return False
+    return True
 
-    מחשב ערכים אוטומטיים, ומוסיף row_hash/key_hash/month.
-    שורות ללא תאריך תקין או ללא שדה חובה נשמרות (יסומנו כשגיאה ב-analyze).
+
+def prepare_incoming(kind: str, df: pd.DataFrame) -> pd.DataFrame:
+    """מנקה קלט: מסיר שורות ריקות, ממיר טיפוסים, מחשב אוטומטית,
+
+    ומוסיף row_hash/key_hash/month. שורות לא תקינות נשמרות לצורך אבחון.
     """
     if df is None or df.empty:
         return empty_frame(kind)
     df = df.copy()
-    # שמור רק עמודות מוכרות
     keep = [c for c in column_keys(kind) if c in df.columns]
     df = df[keep]
     df = _coerce_types(kind, df)
 
-    # הסרת שורות ריקות לחלוטין (כל העמודות NA/ריק)
-    def _is_blank_row(r) -> bool:
-        for v in r:
-            if v is None:
-                continue
-            try:
-                if pd.isna(v):
-                    continue
-            except (TypeError, ValueError):
-                pass
-            if isinstance(v, str) and not v.strip():
-                continue
-            return False
-        return True
-
-    df = df[~df.apply(_is_blank_row, axis=1)].reset_index(drop=True)
+    # הסר שורות ריקות לחלוטין
+    df = df[~df.apply(lambda r: _is_blank_row(r.tolist()), axis=1)].reset_index(drop=True)
     if df.empty:
         return empty_frame(kind)
 
     # חישובים אוטומטיים שורה-שורה
-    records = [_autocompute_row(kind, r._asdict() if hasattr(r, "_asdict") else dict(zip(df.columns, r)))
+    records = [_autocompute_row(kind, dict(zip(df.columns, r)))
                for r in df.itertuples(index=False)]
     df = pd.DataFrame(records)
     df = _coerce_types(kind, df)
 
-    # hashes + month
     df["row_hash"] = df.apply(lambda r: compute_row_hash(kind, r.to_dict()), axis=1)
     df["key_hash"] = df.apply(lambda r: compute_key_hash(kind, r.to_dict()), axis=1)
     dt = pd.to_datetime(df["date"], errors="coerce")
@@ -340,39 +500,87 @@ def delete_store(project_id: str, kind: str) -> bool:
     return False
 
 
-# ── ניתוח / יבוא ───────────────────────────────────────────────
-def validate_incoming(kind: str, prepared: pd.DataFrame) -> pd.Series:
-    """מחזיר Series בוליאני: True לשורות תקינות (כל שדות החובה + תאריך).
+# ── ולידציה ואבחון ─────────────────────────────────────────────
+def _field_filled(kind: str, prepared: pd.DataFrame, field: str) -> pd.Series:
+    """Series בוליאני: האם השדה מלא (מספר≠0 / טקסט לא ריק / תאריך תקין)."""
+    if field not in prepared.columns:
+        return pd.Series(False, index=prepared.index)
+    col = prepared[field]
+    ckind = column_kind(kind, field)
+    if ckind == "date":
+        return prepared["month"].notna() & (prepared["month"].astype(str) != "")
+    if ckind in ("int", "float"):
+        num = pd.to_numeric(col, errors="coerce")
+        return num.notna() & (num != 0)
+    return col.apply(lambda v: bool(_norm_text(v)))
 
-    שורה תקינה = יש לה תאריך תקין וכל שדות החובה מלאים.
-    """
+
+def validate_incoming(kind: str, prepared: pd.DataFrame) -> pd.Series:
+    """Series בוליאני: True לשורות תקינות (כל required_all + כל קבוצת required_any)."""
     if prepared.empty:
         return pd.Series([], dtype=bool)
-    required = KINDS[kind]["required"]
+    cfg = KINDS[kind]
     ok = pd.Series(True, index=prepared.index)
-    # תאריך תקין (month לא NaN)
-    ok &= prepared["month"].notna() & (prepared["month"].astype(str) != "")
-    for field in required:
-        if field in ("date",):
-            continue
-        col = prepared[field] if field in prepared.columns else pd.Series(pd.NA, index=prepared.index)
-        ckind = column_kind(kind, field)
-        if ckind in ("int", "float"):
-            ok &= pd.to_numeric(col, errors="coerce").notna()
-        else:
-            ok &= col.apply(lambda v: bool(_norm_text(v)))
+    for field in cfg.get("required_all", []):
+        ok &= _field_filled(kind, prepared, field)
+    for group in cfg.get("required_any", []):
+        any_filled = pd.Series(False, index=prepared.index)
+        for field in group:
+            any_filled |= _field_filled(kind, prepared, field)
+        ok &= any_filled
     return ok
 
 
+def row_diagnostics(kind: str, prepared: pd.DataFrame) -> pd.DataFrame:
+    """טבלת אבחון שורה-שורה: מספר שורה, תאריך, סטטוס, בעיות, אזהרות."""
+    cfg = KINDS[kind]
+    labels = column_labels(kind)
+    rows = []
+    for i, (_idx, r) in enumerate(prepared.iterrows(), start=1):
+        errors, warns = [], []
+        # תאריך
+        if not (r.get("month") and str(r.get("month")) != "nan"):
+            errors.append("חסר/לא תקין: תאריך")
+        # required_all (פרט לתאריך שכבר טופל)
+        for field in cfg.get("required_all", []):
+            if field == "date":
+                continue
+            if not _field_filled(kind, prepared.loc[[_idx]], field).iloc[0]:
+                errors.append(f"חסר: {labels.get(field, field)}")
+        # required_any
+        for group in cfg.get("required_any", []):
+            filled = any(_field_filled(kind, prepared.loc[[_idx]], f).iloc[0]
+                         for f in group)
+            if not filled:
+                names = " / ".join(labels.get(f, f) for f in group)
+                errors.append(f"חסר אחד מ: {names}")
+        # warn_any
+        for group in cfg.get("warn_any", []):
+            filled = any(_field_filled(kind, prepared.loc[[_idx]], f).iloc[0]
+                         for f in group)
+            if not filled:
+                names = " / ".join(labels.get(f, f) for f in group)
+                warns.append(f"מומלץ למלא: {names}")
+        rows.append({
+            "שורה": i,
+            "תאריך": _norm_date(r.get("date")) or "—",
+            "סטטוס": "תקין" if not errors else "שגיאה",
+            "בעיות": " · ".join(errors) if errors else "—",
+            "אזהרות": " · ".join(warns) if warns else "—",
+        })
+    return pd.DataFrame(rows)
+
+
+# ── ניתוח / יבוא ───────────────────────────────────────────────
 def _empty_summary() -> dict:
     return {
-        "rows_in_file": 0, "valid_count": 0, "error_count": 0,
+        "rows_in_file": 0, "valid_count": 0, "error_count": 0, "warn_count": 0,
         "new_count": 0, "duplicate_count": 0, "updated_count": 0,
         "store_before": 0, "store_after": 0,
         "date_min": None, "date_max": None, "months": [],
         "amount_sum": 0.0, "liters_sum": 0.0, "hours_sum": 0.0,
         # תאימות ל-db.log_import
-        "new_count_": 0, "no_date_count": 0, "no_amount_count": 0,
+        "no_date_count": 0, "no_amount_count": 0,
         "debit_sum": 0.0, "credit_sum": 0.0,
     }
 
@@ -381,15 +589,7 @@ def analyze(project_id: str, kind: str, incoming: pd.DataFrame,
             mode: str = "add_new", target_month: str | None = None) -> dict:
     """מנתח יבוא מבלי לשמור — מחזיר סיכום לתצוגה מקדימה.
 
-    Args:
-        project_id: מזהה הפרויקט.
-        kind: "solar" / "hours".
-        incoming: ה-DataFrame הגולמי מה-editor (לפני prepare).
-        mode: add_new / update_existing / replace_month / check_only.
-        target_month: חודש (MM-YYYY) לשימוש במצב replace_month.
-
-    Returns:
-        dict עם ספירות, סכומים, חודשים מושפעים ועוד.
+    incoming: DataFrame בעמודות המערכת (אחרי apply_mapping), לפני prepare.
     """
     summary = _empty_summary()
     prepared = prepare_incoming(kind, incoming)
@@ -410,14 +610,14 @@ def analyze(project_id: str, kind: str, incoming: pd.DataFrame,
         summary["date_max"] = dt.max()
     summary["months"] = sorted(valid["month"].dropna().unique().tolist())
 
-    if "amount" in valid.columns:
-        summary["amount_sum"] = float(pd.to_numeric(valid["amount"], errors="coerce").fillna(0).sum())
     if "liters" in valid.columns:
         summary["liters_sum"] = float(pd.to_numeric(valid["liters"], errors="coerce").fillna(0).sum())
     if "total_hours" in valid.columns:
         summary["hours_sum"] = float(pd.to_numeric(valid["total_hours"], errors="coerce").fillna(0).sum())
     if "total_cost" in valid.columns:
         summary["amount_sum"] = float(pd.to_numeric(valid["total_cost"], errors="coerce").fillna(0).sum())
+    elif "amount" in valid.columns:
+        summary["amount_sum"] = float(pd.to_numeric(valid["amount"], errors="coerce").fillna(0).sum())
 
     store = load_store(project_id, kind)
     has_rows = not store.empty and "row_hash" in store.columns
@@ -446,7 +646,6 @@ def analyze(project_id: str, kind: str, incoming: pd.DataFrame,
         summary["updated_count"] = int(is_update.sum())
         summary["new_count"] = int(is_new.sum())
         if mode == "update_existing":
-            # מעדכן קיימים (key) + מוסיף חדשים; כפילויות מדלגות
             summary["store_after"] = summary["store_before"] + summary["new_count"]
         else:  # add_new
             summary["store_after"] = summary["store_before"] + int((~is_dup).sum())
@@ -487,11 +686,10 @@ def apply_import(project_id: str, kind: str, incoming: pd.DataFrame,
         kept = store[~store["month"].isin(months)] if "month" in store.columns else store
         merged = pd.concat([kept, valid], ignore_index=True, sort=False)
     elif mode == "update_existing":
-        # הסר מהמאגר שורות עם key_hash שמופיע בקלט, ואז הוסף את כל הקלט התקין
         incoming_keys = set(valid["key_hash"])
         kept = store[~store["key_hash"].isin(incoming_keys)] if "key_hash" in store.columns else store
         merged = pd.concat([kept, valid], ignore_index=True, sort=False)
-    else:  # add_new — הוסף רק row_hash שלא קיים
+    else:  # add_new
         existing = set(store["row_hash"])
         fresh = valid[~valid["row_hash"].isin(existing)]
         merged = pd.concat([store, fresh], ignore_index=True, sort=False)
