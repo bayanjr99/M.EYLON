@@ -38,7 +38,8 @@ def _kpis_for_scope(df: pd.DataFrame) -> dict:
         income_mask = real_income_mask(chash)
         out["revenue"] = float(-chash[income_mask]["amount"].sum()) \
             if income_mask.any() else 0
-        expense_mask = ~income_mask & (chash["amount"] > 0)
+        # נטו (חובה−זכות) על חשבונות שאינם הכנסה — מתאם למאזן הבוחן.
+        expense_mask = ~income_mask
         out["expenses"] = float(chash[expense_mask]["amount"].sum()) \
             if expense_mask.any() else 0
         out["profit"] = out["revenue"] - out["expenses"]

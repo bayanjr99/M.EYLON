@@ -21,11 +21,15 @@ def _scope(df: pd.DataFrame, project_id: str | None) -> pd.DataFrame:
 
 
 def kpi_total_expenses(df: pd.DataFrame, project_id: str | None = None) -> float:
-    """סה"כ הוצאות (amount חיובי). אופציונלית לפרויקט בודד."""
+    """סה"כ הוצאות נטו (חובה−זכות) על חשבונות שאינם הכנסה — מתאם למאזן."""
     data = _scope(df, project_id)
     if data.empty:
         return 0.0
-    return float(data.loc[data["amount"] > 0, "amount"].sum())
+    from core.chashbashevet_loader import real_income_mask
+    chash = data[data["source"] == "chashbashevet"] if "source" in data.columns else data
+    if chash.empty:
+        return 0.0
+    return float(chash[~real_income_mask(chash)]["amount"].sum())
 
 
 def kpi_total_income(df: pd.DataFrame, project_id: str | None = None) -> float:
@@ -68,7 +72,7 @@ def monthly_trend(df: pd.DataFrame, project_id: str | None = None) -> pd.DataFra
     chash = chash.assign(
         _is_income=income_mask,
         _income_amount=(-chash["amount"]).where(income_mask, 0),
-        _expense_amount=chash["amount"].where(~income_mask & (chash["amount"] > 0), 0),
+        _expense_amount=chash["amount"].where(~income_mask, 0),
     )
     grouped = chash.groupby("month", dropna=False).agg(
         total_income=("_income_amount", "sum"),

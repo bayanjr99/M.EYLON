@@ -236,8 +236,9 @@ def project_summary(df: pd.DataFrame, project_id: str) -> dict:
 
         # הכנסה: amount שלילי אחרי inversion ב-loader. revenue = abs(sum)
         summary["revenue"] = float(-income_rows["amount"].sum()) if not income_rows.empty else 0.0
-        # הוצאות: amount > 0 מחשבונות שאינם הכנסה
-        summary["expenses"] = float(expense_rows.loc[expense_rows["amount"] > 0, "amount"].sum()) \
+        # הוצאות: נטו (חובה−זכות) על חשבונות שאינם הכנסה — מתאם למאזן הבוחן.
+        # כולל שורות זיכוי/היפוך שליליות, אחרת ההוצאות מנופחות מול המאזן.
+        summary["expenses"] = float(expense_rows["amount"].sum()) \
             if not expense_rows.empty else 0.0
         summary["profit"] = summary["revenue"] - summary["expenses"]
         if summary["revenue"] > 0:
