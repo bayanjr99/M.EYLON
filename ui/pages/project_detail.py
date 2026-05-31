@@ -1577,6 +1577,7 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     sec("חריגות במעקב", meta="מטבלת בעיות איכות נתונים")
     status_filter = st.radio(
         "סטטוס", ["פתוחות", "טופלו", "כל הסטטוסים"],
+        index=2,  # ברירת מחדל: הכל
         horizontal=True, key=f"qa_status_{project_id}",
         label_visibility="collapsed",
     )
