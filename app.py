@@ -130,6 +130,10 @@ elif current_view == "import":
     # מסך יבוא דוחות (כרטסת/מאזן מצטבר + קבצי חודש + היסטוריה)
     from ui.pages.import_data import render_import_page
     render_import_page(projects)
+elif current_view == "manual_entry":
+    # מסך הזנת נתונים ידנית (סולר/שעות בסגנון אקסל)
+    from ui.pages.manual_entry import render_manual_entry_page
+    render_manual_entry_page(projects)
 elif selected_project_id:
     # מסך פרויקט בודד
     project_meta = next(
@@ -145,7 +149,7 @@ elif selected_project_id:
         render_project_detail(df_master, project_meta)
 else:
     # מסך נחיתה — רשימת פרויקטים + כפתורי ניווט
-    nav1, nav2, _ = st.columns([1, 1, 4])
+    nav1, nav2, nav3, _ = st.columns([1, 1, 1, 3])
     with nav1:
         if st.button("📊 השוואות", key="open_comparisons",
                      use_container_width=True,
@@ -157,6 +161,12 @@ else:
                      use_container_width=True,
                      help="העלה דוח כרטסת/מאזן מצטבר — עדכון אוטומטי לפי תאריך"):
             st.session_state["view"] = "import"
+            st.rerun()
+    with nav3:
+        if st.button("✍️ הזנת נתונים ידנית", key="open_manual_entry",
+                     use_container_width=True,
+                     help="הדבק נתוני סולר/שעות מאקסל ישירות למערכת"):
+            st.session_state["view"] = "manual_entry"
             st.rerun()
     render_projects_list(df_master, projects)
 

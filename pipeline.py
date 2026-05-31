@@ -25,6 +25,7 @@ from core import (
     fuel_tracker_loader,
     hours_loader,
     ledger_store,
+    manual_store,
     site_tracking_loader,
     solar_loader,
 )
@@ -662,6 +663,91 @@ def aggregate_store_chashbashevet(project_id: str, project_name: str) -> pd.Data
     return rows[MASTER_SCHEMA_COLS].reset_index(drop=True)
 
 
+def aggregate_manual_solar(project_id: str, project_name: str) -> pd.DataFrame:
+    """ממיר את מאגר הסולר הידני (manual_store) לשורות בסכמת master.
+
+    כל שורה: source="solar", amount=0.0 (העלות מגיעה מהכרטסת —
+    לא לכפול), עם liters/license_num/tool_name בעמודות הייעודיות.
+    החודש נגזר מתאריך השורה.
+    """
+    store = manual_store.load_store(project_id, "solar")
+    if store.empty or "date" not in store.columns:
+        return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+
+    store = store.copy()
+    dt = pd.to_datetime(store["date"], errors="coerce")
+    months = dt.dt.strftime("%m-%Y")
+
+    def _col(name, default=pd.NA):
+        return store[name] if name in store.columns else pd.Series(default, index=store.index)
+
+    rows = pd.DataFrame({
+        "project_id": project_id,
+        "project_name": project_name,
+        "month": months,
+        "date": dt,
+        "category": "סולר וצמ\"ה",
+        "subcategory": _col("fuel_type", "תדלוק"),
+        "account_num": pd.NA,
+        "account_name": "",
+        "supplier": _col("supplier", ""),
+        "description": _col("tool_name", "").astype(str),
+        "amount": 0.0,
+        "source": "solar",
+        "anomaly_flags": "",
+        "license_num": _col("license_num"),
+        "tool_name": _col("tool_name", ""),
+        "liters": _col("liters", 0.0),
+    })
+    rows = rows[rows["month"].notna()]
+    for col in MASTER_SCHEMA_COLS:
+        if col not in rows.columns:
+            rows[col] = pd.NA
+    return rows[MASTER_SCHEMA_COLS].reset_index(drop=True)
+
+
+def aggregate_manual_hours(project_id: str, project_name: str) -> pd.DataFrame:
+    """ממיר את מאגר השעות הידני (manual_store) לשורות בסכמת master.
+
+    כל שורה: source="hours", amount=0.0, work_hours=total_hours,
+    tool_name=שם העובד (כדי שיופיע בטאב שעות). החודש נגזר מתאריך השורה.
+    """
+    store = manual_store.load_store(project_id, "hours")
+    if store.empty or "date" not in store.columns:
+        return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+
+    store = store.copy()
+    dt = pd.to_datetime(store["date"], errors="coerce")
+    months = dt.dt.strftime("%m-%Y")
+
+    def _col(name, default=pd.NA):
+        return store[name] if name in store.columns else pd.Series(default, index=store.index)
+
+    rows = pd.DataFrame({
+        "project_id": project_id,
+        "project_name": project_name,
+        "month": months,
+        "date": dt,
+        "category": "שעות עבודה",
+        "subcategory": _col("work_type", ""),
+        "account_num": pd.NA,
+        "account_name": "",
+        "supplier": "",
+        "description": _col("employee_name", "").astype(str),
+        "amount": 0.0,
+        "source": "hours",
+        "anomaly_flags": "",
+        "license_num": pd.NA,
+        "tool_name": _col("employee_name", ""),
+        "work_hours": _col("total_hours", 0.0),
+    })
+    rows = rows[rows["month"].notna()]
+    for col in MASTER_SCHEMA_COLS:
+        if col not in rows.columns:
+            rows[col] = pd.NA
+    return rows[MASTER_SCHEMA_COLS].reset_index(drop=True)
+
+
 def load_balance_snapshots(project_id: str) -> pd.DataFrame:
     """מחזיר את תצלומי המאזן של הפרויקט (לבקרה — לא תנועות)."""
     return balance_store.load_snapshots(project_id)
@@ -686,6 +772,23 @@ def build_master() -> pd.DataFrame:
         project_name = proj.get("project_name", project_id)
         has_store = ledger_store.has_store(project_id)
 
+        # הזנה ידנית (סולר/שעות) — נטענת פעם אחת לכל הפרויקט, מתפלגת לחודשים
+        manual_solar = aggregate_manual_solar(project_id, project_name)
+        manual_hours = aggregate_manual_hours(project_id, project_name)
+        manual_all = pd.concat(
+            [f for f in (manual_solar, manual_hours) if not f.empty],
+            ignore_index=True, sort=False,
+        ) if (not manual_solar.empty or not manual_hours.empty) else pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+        manual_months = (
+            set(manual_all["month"].dropna().unique())
+            if not manual_all.empty else set()
+        )
+
+        def _manual_for(month: str) -> pd.DataFrame:
+            if manual_all.empty:
+                return pd.DataFrame()
+            return manual_all[manual_all["month"] == month]
+
         if has_store:
             # כרטסת מהמאגר המצטבר (כל החודשים בבת אחת, לפי תאריך תנועה)
             store_chash = aggregate_store_chashbashevet(project_id, project_name)
@@ -694,7 +797,7 @@ def build_master() -> pd.DataFrame:
                 if not store_chash.empty else set()
             )
             folder_months = set(list_available_months(project_id))
-            for month in sorted(store_months | folder_months):
+            for month in sorted(store_months | folder_months | manual_months):
                 frames: list[pd.DataFrame] = []
                 mc = store_chash[store_chash["month"] == month] if not store_chash.empty else pd.DataFrame()
                 if not mc.empty:
@@ -705,6 +808,9 @@ def build_master() -> pd.DataFrame:
                                             include_chashbashevet=False)
                     if not other.empty:
                         frames.append(other)
+                man = _manual_for(month)
+                if not man.empty:
+                    frames.append(man)
                 if not frames:
                     continue
                 df = pd.concat(frames, ignore_index=True, sort=False)
@@ -718,11 +824,24 @@ def build_master() -> pd.DataFrame:
             continue
 
         # — נתיב קלאסי: קבצים לפי-חודש —
-        for month in list_available_months(project_id):
-            loaded = load_project_month(project_id, month)
-            df = aggregate_month(loaded, project_id, project_name, month)
-            if df.empty:
+        folder_months = set(list_available_months(project_id))
+        for month in sorted(folder_months | manual_months):
+            frames = []
+            if month in folder_months:
+                loaded = load_project_month(project_id, month)
+                fm = aggregate_month(loaded, project_id, project_name, month)
+                if not fm.empty:
+                    frames.append(fm)
+            man = _manual_for(month)
+            if not man.empty:
+                frames.append(man)
+            if not frames:
                 continue
+            df = pd.concat(frames, ignore_index=True, sort=False)
+            for col in MASTER_SCHEMA_COLS:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[MASTER_SCHEMA_COLS]
             df = detect_anomalies(df, tools)
             all_rows.append(df)
             logger.info("Built %d rows for %s/%s", len(df), project_id, month)
