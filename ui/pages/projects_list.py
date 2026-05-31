@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from core import project_aggregator
-from ui.components import empty_state, sec
+from ui.components import empty_state, sec, kpi_block, render_kpi_group
 from ui.formatters import format_currency
 
 
@@ -421,6 +421,9 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
             _render_add_project_card()
         return
 
+    # ── סקירה כללית של כל החברה (סיכום פורטפוליו) ──
+    _render_portfolio_overview(df_master, projects)
+
     # ── פילטר סטטוס: ארכיון מוסתר כברירת מחדל ──
     # "פעילים בלבד" (ברירת מחדל) מציג active+future+paused.
     # "הכל ללא ארכיון" מציג את כל הסטטוסים פרט ל-archived.
@@ -474,6 +477,44 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
                     _render_add_project_card()
                 else:
                     _render_project_card(cell, df_master)
+
+
+def _render_portfolio_overview(df_master: pd.DataFrame,
+                                projects: list[dict]) -> None:
+    """סקירת פורטפוליו: KPI מצרפי של כל החברה בראש מסך הנחיתה.
+
+    משתמש באותן פונקציות analytics כמו מסך הפרויקט — כך הסכומים מסונכרנים
+    עם דפי הפרויקט הבודדים (הכנסות/הוצאות נטו לפי real_income_mask).
+    """
+    if df_master is None or df_master.empty:
+        return
+
+    # מצרפים את אותו project_summary שמופיע בכרטיסים — כך שהבאנר
+    # שווה בדיוק לסכום הכרטיסים (עקביות מלאה, ללא ניפוח הכנסות מזיכויים).
+    revenue = expenses = 0.0
+    n_with_data = 0
+    for p in projects:
+        s = project_aggregator.project_summary(df_master, p.get("project_id", ""))
+        if s["has_data"]:
+            n_with_data += 1
+            revenue += s["revenue"]
+            expenses += s["expenses"]
+    profit = revenue - expenses
+    profit_pct = (profit / revenue * 100) if revenue else 0.0
+    n_active = n_with_data
+
+    sec("סקירת פורטפוליו", meta="סיכום כל הפרויקטים במערכת")
+    kpis = [
+        kpi_block("הכנסות", _fmt_money(revenue), accent="green", icon="ti-trending-up"),
+        kpi_block("הוצאות", _fmt_money(expenses), accent="red", icon="ti-trending-down"),
+        kpi_block("רווח / הפסד", _fmt_money(profit),
+                  accent="green" if profit >= 0 else "red", icon="ti-wallet"),
+        kpi_block("% רווחיות", f"{profit_pct:.1f}%",
+                  accent="green" if profit >= 0 else "red", icon="ti-percentage"),
+        kpi_block("פרויקטים עם נתונים", f"{n_active}", accent="blue",
+                  icon="ti-building-community"),
+    ]
+    render_kpi_group(kpis, "מבט-על חברה", group_icon="ti-chart-bar")
 
 
 def _clean_text(v) -> str:
