@@ -9,6 +9,7 @@ import streamlit as st
 from core import anomaly_detector, project_aggregator
 from ui.components import (
     breadcrumb, empty_state, ins, kpi_block, render_kpi_group, sec,
+    exec_summary, blk,
 )
 from ui.formatters import (
     format_currency, format_number, format_decimal, format_percent,

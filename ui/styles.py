@@ -279,6 +279,25 @@ a[href*="streamlit.io/cloud"], a[href*="share.streamlit.io"]{display:none!import
 .exec-sum-q-sub{font-size:11.5px;color:#64748B;line-height:1.4;}
 @media (max-width:900px){.exec-summary-body{grid-template-columns:1fr;}}
 
+/* ═══ Responsive: מסכים קטנים / מובייל (פריט 19) ═══ */
+/* רוחב ביניים — מקטינים מעט את ערך ה-KPI כדי שלא ייחתך */
+@media (max-width:1200px){
+  .kpi-val{font-size:20px;letter-spacing:-.4px;}
+}
+/* טאבלט — עוטפים את ה-strip ל-3 עמודות במקום N קבוע */
+@media (max-width:992px){
+  .kpi-strip{grid-template-columns:repeat(3,minmax(0,1fr))!important;}
+  .kpi-val{font-size:19px;}
+}
+/* מובייל — 2 עמודות, ערך קצת קטן יותר, וכותרת יכולה להישבר */
+@media (max-width:640px){
+  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+  .kpi-val{font-size:18px;}
+  .kpi-lbl{white-space:normal;}
+  .block-container{padding-left:.75rem!important;padding-right:.75rem!important;}
+  .exec-sum-q-value{font-size:17px;}
+}
+
 /* ═══ Empty state ═══ */
 .empty-state{background:#FFFFFF;border:1px solid var(--line);border-radius:14px;
   padding:36px 28px;margin:16px 0;text-align:center;
