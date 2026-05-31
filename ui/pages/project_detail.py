@@ -195,16 +195,24 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
 
     summary = project_aggregator.project_summary(df_master_scoped, project_id)
 
-    # ── Period header: scope + months + tx count ──
+    # ── Period header: scope + months + tx count + מקורות נתונים ──
     months_str = ", ".join(summary["months"]) if summary["months"] else "—"
     scope_text = (f"📅 <b>חודש {month_choice}</b>"
                   if month_choice != "כל החודשים"
                   else f'📅 <b>{len(summary["months"])} חודשים</b>: {months_str}')
+    # אינדיקטור מקורות נתונים שנטענו ל-scope הנוכחי (פריט מצב נתונים)
+    sources_present = ""
+    if "source" in df.columns and not df.empty:
+        labels = [_SOURCE_HE.get(s, s) for s in df["source"].dropna().unique()]
+        if labels:
+            sources_present = (f'<span class="sep">·</span> מקורות: '
+                               f'{" · ".join(sorted(set(labels)))}')
     period_html = (
         f'<div class="period-header">'
         f'<span>{scope_text}'
         f'<span class="sep">·</span> {summary["num_transactions"]:,} תנועות'
-        f'<span class="sep">·</span> {summary["num_suppliers"]} ספקים</span>'
+        f'<span class="sep">·</span> {summary["num_suppliers"]} ספקים'
+        f'{sources_present}</span>'
         f'<span class="tag">תמונת פרויקט</span>'
         f'</div>'
     )
@@ -1428,17 +1436,41 @@ def _tab_transactions(df: pd.DataFrame) -> None:
             if c in df.columns]
     disp = df[cols].copy()
 
-    # פילטר חיפוש מקומי לטאב
-    q = st.text_input("🔍 חיפוש בתנועות", key="tx_search",
-                      placeholder="חפש ספק / חשבון / פרטים…")
+    # ── שורת פילטרים: חיפוש חופשי · מקור · טווח סכום ──
+    fc1, fc2 = st.columns([3, 2])
+    with fc1:
+        q = st.text_input("🔍 חיפוש בתנועות", key="tx_search",
+                          placeholder="חפש ספק / חשבון / פרטים…")
+    with fc2:
+        src_opts = ["הכול"]
+        if "source" in disp.columns:
+            src_opts += [_SOURCE_HE.get(s, s)
+                         for s in disp["source"].dropna().unique()]
+        src_pick = st.selectbox("מקור", src_opts, key="tx_src")
+
+    # סינון לפי מקור
+    if "source" in disp.columns and src_pick != "הכול":
+        disp = disp[disp["source"].map(lambda s: _SOURCE_HE.get(s, s)) == src_pick]
+
+    # סינון לפי טווח סכום
+    if "amount" in disp.columns and not disp.empty:
+        amounts = pd.to_numeric(disp["amount"], errors="coerce")
+        lo, hi = float(amounts.min()), float(amounts.max())
+        if lo < hi:
+            rng = st.slider("טווח סכום (₪)", min_value=lo, max_value=hi,
+                            value=(lo, hi), key="tx_amount_rng")
+            disp = disp[(amounts >= rng[0]) & (amounts <= rng[1])]
+
+    # חיפוש חופשי
     if q.strip():
         ql = q.strip().lower()
         mask = pd.Series(False, index=disp.index)
-        for c in ("account_name", "supplier", "description"):
+        for c in ("account_name", "supplier", "description", "account_num"):
             if c in disp.columns:
                 mask |= disp[c].astype(str).str.lower().str.contains(ql, na=False)
         disp = disp[mask]
-        st.caption(f"{len(disp):,} תנועות תואמות")
+
+    st.caption(f"{len(disp):,} תנועות מוצגות")
 
     # תרגום ערכי 'source' לעברית
     if "source" in disp.columns:
@@ -1452,6 +1484,9 @@ def _tab_transactions(df: pd.DataFrame) -> None:
             disp[c] = pd.to_numeric(disp[c], errors="coerce")
     display_dataframe(disp, use_container_width=True, hide_index=True,
                   column_config=build_column_config(disp.columns))
+    _excel_download(disp, sheet_name="תנועות",
+                     file_name="transactions.xlsx",
+                     label="⬇️ ייצוא לאקסל", key="dl_all_tx")
 
 
 _SOURCE_HE = {
