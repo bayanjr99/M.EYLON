@@ -210,13 +210,14 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
     )
     st.markdown(period_html, unsafe_allow_html=True)
 
-    # ── 5 טאבים ראשיים בלבד ──
+    # ── 6 טאבים ראשיים ──
     tabs = st.tabs([
         "📊 סקירה כללית",
         "💰 כספים",
         "⛽ סולר",
         "🕒 שעות עבודה",
         "🚜 כלים",
+        "🚨 חריגים ובדיקות",
     ])
 
     with tabs[0]:
@@ -301,6 +302,13 @@ def render_project_detail(df_master: pd.DataFrame, project_meta: dict) -> None:
             breadcrumb("כלים", "ניתוח כלי")
             _subtab_cost_per_hour(df, project_meta)
 
+    with tabs[5]:
+        # חריגים ובדיקות: מרכז את כל ההתראות והבדיקות במקום אחד
+        breadcrumb("פרויקט", project_name, "חריגים ובדיקות")
+        _render_smart_alerts(df, project_id)
+        st.markdown("---")
+        _tab_qa(df, project_meta)
+
 
 # ─── Tab 1: סקירה כללית ─────────────────────────────────────
 def _render_smart_alerts(df: pd.DataFrame, project_id: str) -> None:
@@ -341,11 +349,112 @@ def _render_smart_alerts(df: pd.DataFrame, project_id: str) -> None:
                 ins(SEVERITY_COLOR[a["severity"]], "ℹ️", a["title"], a["body"])
 
 
-def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
-    # ── התראות חכמות בראש המסך ──
+def _overview_top_drivers(df: pd.DataFrame) -> dict:
+    """מחזיר את מניעי ההוצאה המרכזיים: קטגוריה/ספק/חודש יקרים ביותר.
+
+    מבוסס על שורות חשבשבת שאינן הכנסה (נטו חובה−זכות), כדי להתאים
+    ללוגיקת ההוצאות בכל המערכת.
+    """
+    out = {"top_category": None, "top_category_amount": 0.0,
+           "top_supplier": None, "top_supplier_amount": 0.0,
+           "worst_month": None, "worst_month_amount": 0.0}
+    if df.empty or "source" not in df.columns:
+        return out
+    from core.chashbashevet_loader import real_income_mask
+    chash = df[df["source"] == "chashbashevet"]
+    if chash.empty:
+        return out
+    exp = chash[~real_income_mask(chash)]
+    if exp.empty:
+        return out
+    cat_col = "main_category" if "main_category" in exp.columns else "category"
+    if cat_col in exp.columns:
+        by_cat = exp.groupby(cat_col)["amount"].sum().sort_values(ascending=False)
+        if not by_cat.empty and by_cat.iloc[0] > 0:
+            out["top_category"] = str(by_cat.index[0])
+            out["top_category_amount"] = float(by_cat.iloc[0])
+    if "supplier" in exp.columns:
+        sup = exp[exp["supplier"].fillna("").astype(str).str.strip() != ""]
+        if not sup.empty:
+            by_sup = sup.groupby("supplier")["amount"].sum().sort_values(ascending=False)
+            if not by_sup.empty and by_sup.iloc[0] > 0:
+                out["top_supplier"] = str(by_sup.index[0])
+                out["top_supplier_amount"] = float(by_sup.iloc[0])
+    if "month" in exp.columns:
+        by_month = exp.groupby("month")["amount"].sum().sort_values(ascending=False)
+        if not by_month.empty and by_month.iloc[0] > 0:
+            out["worst_month"] = str(by_month.index[0])
+            out["worst_month_amount"] = float(by_month.iloc[0])
+    return out
+
+
+def _render_overview_executive(df: pd.DataFrame, summary: dict) -> None:
+    """סיכום מנהלים קצר בראש הסקירה: סטטוס, מניעים מרכזיים וטקסט תובנות.
+
+    ההתראות המלאות עברו לטאב '🚨 חריגים ובדיקות' כדי למנוע כפילות;
+    כאן מוצג רק תקציר ניהולי + הפניה.
+    """
+    from ui.formatters import format_currency
+    profit = summary.get("profit", 0.0)
+    in_loss = profit < 0
+    status = "bad" if in_loss else "good"
+    status_text = "הפרויקט בהפסד" if in_loss else "הפרויקט ברווח"
+
+    drivers = _overview_top_drivers(df)
+    cat_txt = drivers["top_category"] or "—"
+    cat_sub = format_currency(drivers["top_category_amount"]) if drivers["top_category"] else "אין נתונים"
+    sup_txt = drivers["top_supplier"] or "—"
+    sup_sub = format_currency(drivers["top_supplier_amount"]) if drivers["top_supplier"] else "אין נתונים"
+
+    exec_summary(
+        title="סיכום מנהלים",
+        status=status,
+        status_text=f"{status_text} · {format_currency(abs(profit))}",
+        questions=[
+            ("רווח / הפסד", format_currency(profit),
+             f"הכנסות {format_currency(summary.get('revenue', 0))} · "
+             f"הוצאות {format_currency(summary.get('expenses', 0))}"),
+            ("הקטגוריה היקרה ביותר", cat_txt, cat_sub),
+            ("הספק המרכזי", sup_txt, sup_sub),
+        ],
+    )
+
+    # ── תובנות עיקריות (טקסט אוטומטי) ──
+    verb = "בהפסד" if in_loss else "ברווח"
+    parts = [f"הפרויקט נמצא <b>{verb}</b> של {format_currency(abs(profit))}"]
+    if drivers["top_category"]:
+        parts.append(f"ההוצאה הגדולה ביותר היא בקטגוריית <b>{cat_txt}</b> "
+                     f"({format_currency(drivers['top_category_amount'])})")
+    if drivers["top_supplier"]:
+        parts.append(f"הספק המרכזי הוא <b>{sup_txt}</b> "
+                     f"({format_currency(drivers['top_supplier_amount'])})")
+    if drivers["worst_month"]:
+        parts.append(f"החודש הבעייתי ביותר הוא <b>{drivers['worst_month']}</b> "
+                     f"({format_currency(drivers['worst_month_amount'])} הוצאות)")
+    blk("תובנות עיקריות", ". ".join(parts) + ".", cls="warm")
+
+    # ── הפניה לטאב חריגים אם יש התראות חמורות ──
     project_id = df["project_id"].iloc[0] if not df.empty and "project_id" in df.columns else None
     if project_id:
-        _render_smart_alerts(df, project_id)
+        try:
+            from core.smart_alerts import collect_alerts
+            alerts = collect_alerts(df, project_id)
+            high = sum(1 for a in alerts if a["severity"] == "high")
+            if alerts:
+                msg = (f"זוהו <b>{len(alerts)}</b> התראות"
+                       + (f" ({high} בחומרה גבוהה)" if high else "")
+                       + ". הפירוט המלא בטאב <b>🚨 חריגים ובדיקות</b>.")
+                st.markdown(
+                    f'<div class="focus {"red" if high else "amber"}">{msg}</div>',
+                    unsafe_allow_html=True,
+                )
+        except Exception:
+            pass
+
+
+def _tab_overview(df: pd.DataFrame, summary: dict) -> None:
+    # ── סיכום מנהלים בראש המסך (ההתראות המלאות בטאב חריגים) ──
+    _render_overview_executive(df, summary)
 
     kpis_fin = [
         kpi_block("הכנסות", _fmt_money(summary["revenue"]),

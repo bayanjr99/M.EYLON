@@ -102,6 +102,11 @@ html,body,.stApp{direction:rtl;font-family:'Inter','Segoe UI',Arial,sans-serif;
 [data-testid="stAppDeployButton"], [data-testid="stMainMenu"]{display:none!important;}
 section[data-testid="stSidebar"],[data-testid="collapsedControl"]{display:none!important;}
 footer{display:none!important;}
+/* Hide Streamlit Community Cloud "Manage app" viewer badge + host chrome */
+[data-testid="stStatusWidgetContainer"],
+.viewerBadge_container__1QSob, .viewerBadge_link__qRIco,
+div[class*="viewerBadge"], .stActionButton,
+a[href*="streamlit.io/cloud"], a[href*="share.streamlit.io"]{display:none!important;}
 *,*::before,*::after{box-sizing:border-box;}
 .block-container{padding:0 1.5rem 4rem!important;max-width:100%!important;overflow-x:hidden!important;}
 
