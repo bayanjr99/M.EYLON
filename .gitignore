@@ -46,6 +46,9 @@ __pycache__/
 .env
 .env.local
 
+# Claude Code working dirs (worktrees etc) — local only, never deploy.
+.claude/
+
 # IDE / OS
 .vscode/
 .idea/
