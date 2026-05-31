@@ -17,12 +17,14 @@ import pandas as pd
 from core import (
     anomaly_detector,
     balance_loader,
+    balance_store,
     categorizer,
     chashbashevet_loader,
     fuel_inventory,
     fuel_invoices_loader,
     fuel_tracker_loader,
     hours_loader,
+    ledger_store,
     site_tracking_loader,
     solar_loader,
 )
@@ -442,15 +444,21 @@ def aggregate_month(
     project_id: str,
     project_name: str,
     month: str,
+    include_chashbashevet: bool = True,
 ) -> pd.DataFrame:
     """ממזג את נתוני החודש לסכמת master.
 
     מוסיף project_id/project_name/month לכל שורה, מסווג חשבונות לקטגוריות.
+
+    include_chashbashevet=False מדלג על שורות הכרטיס מהתיקייה — משמש
+    כשהכרטסת מגיעה ממאגר התנועות המצטבר (ledger_store) במקום מקבצי החודש.
     """
     frames: list[pd.DataFrame] = []
 
     # 1) חשבשבת - הליבה
     chash = loaded.get("chashbashevet", pd.DataFrame())
+    if not include_chashbashevet:
+        chash = pd.DataFrame()
     if not chash.empty:
         chash = categorizer.categorize_dataframe(chash, account_col="account_num")
         chash_rows = pd.DataFrame({
@@ -603,8 +611,68 @@ def detect_anomalies(df_month: pd.DataFrame, tools_registry: pd.DataFrame | None
     return df_flagged
 
 
+def aggregate_store_chashbashevet(project_id: str, project_name: str) -> pd.DataFrame:
+    """ממיר את מאגר התנועות המצטבר (ledger_store) לשורות בסכמת master.
+
+    כל שורה מקבלת month לפי *תאריך התנועה* (לא לפי מועד ההעלאה).
+    מחזיר ריק אם אין מאגר לפרויקט.
+    """
+    store = ledger_store.load_store(project_id)
+    if store.empty:
+        return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+
+    store = store.copy()
+    # month לפי תאריך התנועה (מקור האמת לסינון החודשי בכל הטאבים)
+    dt = pd.to_datetime(store["date"], errors="coerce")
+    months = dt.dt.strftime("%m-%Y")
+
+    def _col(name, default=pd.NA):
+        return store[name] if name in store.columns else pd.Series(default, index=store.index)
+
+    rows = pd.DataFrame({
+        "project_id": project_id,
+        "project_name": project_name,
+        "month": months,
+        "date": dt,
+        "category": _col("main_category", _col("category", "")),
+        "subcategory": _col("sub_category", _col("subcategory", "")),
+        "account_num": _col("account_num"),
+        "account_name": _col("account_name", ""),
+        "supplier": _col("supplier", ""),
+        "description": _col("details", ""),
+        "amount": _col("amount", 0.0),
+        "debit": _col("debit", 0.0),
+        "credit": _col("credit", 0.0),
+        "account_type": _col("account_type", "unknown"),
+        "main_category": _col("main_category", ""),
+        "sub_category": _col("sub_category", ""),
+        "net_amount": _col("net_amount", _col("amount", 0.0)),
+        "signed_amount": _col("signed_amount", _col("amount", 0.0)),
+        "is_credit_note": _col("is_credit_note", False),
+        "classification_confidence": _col("classification_confidence", "high"),
+        "classification_note": _col("classification_note", ""),
+        "source": "chashbashevet",
+        "anomaly_flags": "",
+    })
+    # שורות ללא תאריך תקין — דלג (יסומנו כשגיאה בעת היבוא)
+    rows = rows[rows["month"].notna()]
+    for col in MASTER_SCHEMA_COLS:
+        if col not in rows.columns:
+            rows[col] = pd.NA
+    return rows[MASTER_SCHEMA_COLS].reset_index(drop=True)
+
+
+def load_balance_snapshots(project_id: str) -> pd.DataFrame:
+    """מחזיר את תצלומי המאזן של הפרויקט (לבקרה — לא תנועות)."""
+    return balance_store.load_snapshots(project_id)
+
+
 def build_master() -> pd.DataFrame:
     """בונה מאסטר מלא של כל הפרויקטים × כל החודשים, שומר ל-parquet.
+
+    לכל פרויקט: אם קיים מאגר תנועות מצטבר (ledger_store) — הכרטסת
+    נלקחת ממנו והחודש נגזר מתאריך התנועה; אחרת נשמרת התנהגות הקבצים
+    לפי-חודש. סולר/שעות/מאזן-מלאי תמיד נטענים מקבצי החודש.
 
     Returns:
         ה-DataFrame המלא (גם נשמר ל-data/master.parquet).
@@ -616,6 +684,40 @@ def build_master() -> pd.DataFrame:
     for proj in projects:
         project_id = proj["project_id"]
         project_name = proj.get("project_name", project_id)
+        has_store = ledger_store.has_store(project_id)
+
+        if has_store:
+            # כרטסת מהמאגר המצטבר (כל החודשים בבת אחת, לפי תאריך תנועה)
+            store_chash = aggregate_store_chashbashevet(project_id, project_name)
+            store_months = (
+                set(store_chash["month"].dropna().unique())
+                if not store_chash.empty else set()
+            )
+            folder_months = set(list_available_months(project_id))
+            for month in sorted(store_months | folder_months):
+                frames: list[pd.DataFrame] = []
+                mc = store_chash[store_chash["month"] == month] if not store_chash.empty else pd.DataFrame()
+                if not mc.empty:
+                    frames.append(mc)
+                if month in folder_months:
+                    loaded = load_project_month(project_id, month)
+                    other = aggregate_month(loaded, project_id, project_name, month,
+                                            include_chashbashevet=False)
+                    if not other.empty:
+                        frames.append(other)
+                if not frames:
+                    continue
+                df = pd.concat(frames, ignore_index=True, sort=False)
+                for col in MASTER_SCHEMA_COLS:
+                    if col not in df.columns:
+                        df[col] = pd.NA
+                df = df[MASTER_SCHEMA_COLS]
+                df = detect_anomalies(df, tools)
+                all_rows.append(df)
+                logger.info("Built %d rows (store) for %s/%s", len(df), project_id, month)
+            continue
+
+        # — נתיב קלאסי: קבצים לפי-חודש —
         for month in list_available_months(project_id):
             loaded = load_project_month(project_id, month)
             df = aggregate_month(loaded, project_id, project_name, month)

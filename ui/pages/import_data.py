@@ -17,6 +17,7 @@ import streamlit as st
 
 from pipeline import PROJECTS_ROOT, build_master, list_available_months
 from ui.components import empty_state, ins, sec
+from ui.formatters import display_dataframe, format_currency, format_number
 
 
 _MONTH_RE = re.compile(r"^\d{2}-\d{4}$")
@@ -74,7 +75,7 @@ def _existing_file_for_slot(month_dir: Path, slot_keywords: list[str]) -> Path |
 
 
 def render_import_page(projects: list[dict]) -> None:
-    """המסך הראשי לייבוא נתונים."""
+    """המסך הראשי לייבוא נתונים — מפצל בין יבוא מצטבר ליבוא קבצי-חודש."""
     # ── Back button + header ──
     back_col, title_col = st.columns([1, 6])
     with back_col:
@@ -88,13 +89,37 @@ def render_import_page(projects: list[dict]) -> None:
             border-radius:10px;border:1px solid var(--brand-primary-mid)">
               <i class="ti ti-upload" style="font-size:22px;color:var(--brand-primary)"></i>
               <div><div style="font-size:15px;font-weight:800;color:var(--ink-strong)">
-                ייבוא נתוני חודש</div>
+                יבוא דוחות</div>
                 <div style="font-size:11px;color:var(--ink-soft);margin-top:2px">
-                  העלה קבצי כרטיס הנהלה / מאזן / סולר / שעות לפרויקט וחודש
+                  העלה דוח כרטסת/מאזן מצטבר (עד היום) — המערכת תזהה כפילויות
+                  ותעדכן לבד את כל החודשים לפי תאריך התנועה
                 </div></div></div>""",
             unsafe_allow_html=True,
         )
 
+    if not projects:
+        empty_state(
+            icon="ti-buildings-off",
+            title="אין פרויקטים ברשימת הפרויקטים",
+            body_html="צריך לרשום פרויקט ברשימת הפרויקטים לפני ייבוא.",
+        )
+        return
+
+    tab_cum, tab_month, tab_hist = st.tabs([
+        "📥 דוחות מצטברים (כרטסת/מאזן)",
+        "🗂️ קבצי חודש (סולר/שעות/מתקדם)",
+        "🕓 היסטוריית יבוא",
+    ])
+    with tab_cum:
+        _render_cumulative_import(projects)
+    with tab_month:
+        _render_monthly_import(projects)
+    with tab_hist:
+        _render_import_history(projects)
+
+
+def _render_monthly_import(projects: list[dict]) -> None:
+    """ייבוא קבצי חודש קלאסי (כרטיס/מאזן/סולר/שעות לפי תיקיית MM-YYYY)."""
     if not projects:
         empty_state(
             icon="ti-buildings-off",
@@ -305,3 +330,289 @@ def render_import_page(projects: list[dict]) -> None:
             # נקה cache של st.cache_data כך שהדשבורד יראה דאטה טריה
             st.cache_data.clear()
         st.rerun()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  יבוא דוחות מצטברים (כרטסת/מאזן עד היום)
+# ════════════════════════════════════════════════════════════════════
+
+_LEDGER_LABEL = "כרטסת (תנועות הנהלת חשבונות)"
+_BALANCE_LABEL = "מאזן בוחן (יתרות עד תאריך)"
+_MODE_LABELS = {
+    "add_new": "הוסף רק תנועות חדשות (מומלץ)",
+    "replace_range": "החלף את כל הנתונים בטווח התאריכים של הקובץ",
+    "check_only": "בדיקה בלבד — ללא שמירה",
+}
+
+
+def _parse_uploaded(up, loader) -> "object":
+    """שומר קובץ שהועלה לקובץ זמני ומריץ עליו loader. מנקה אחריו."""
+    import tempfile
+    from pathlib import Path as _P
+    suffix = _P(up.name).suffix or ".xlsx"
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+            tf.write(up.getbuffer())
+            tmp = tf.name
+        return loader(tmp)
+    finally:
+        if tmp:
+            try:
+                _P(tmp).unlink()
+            except Exception:
+                pass
+
+
+def _fmt_d(val) -> str:
+    """תאריך → dd/mm/YYYY או '—'."""
+    import pandas as pd
+    ts = pd.to_datetime(val, errors="coerce")
+    if pd.isna(ts):
+        return "—"
+    return ts.strftime("%d/%m/%Y")
+
+
+def _show_he(df, mapping: dict) -> None:
+    """משנה שמות עמודות לעברית ומציג דרך display_dataframe."""
+    display_dataframe(df.rename(columns=mapping))
+
+
+def _render_cumulative_import(projects: list[dict]) -> None:
+    """ייבוא דוח מצטבר: כרטסת (תנועות) או מאזן (יתרות), עם dedup ותצוגה מקדימה."""
+    from core import ledger_store, balance_store, db
+    from core import chashbashevet_loader, balance_loader
+
+    # ── 1. פרטי הדוח ──
+    sec("1. פרטי הדוח")
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        names = [p["project_name"] for p in projects]
+        pick = st.selectbox("פרויקט", names, key="cum_project")
+        project = next(p for p in projects if p["project_name"] == pick)
+        project_id = project["project_id"]
+        project_name = project["project_name"]
+    with c2:
+        report_type = st.radio("סוג דוח", [_LEDGER_LABEL, _BALANCE_LABEL],
+                               key="cum_rtype")
+
+    c3, c4 = st.columns(2)
+    with c3:
+        from datetime import date as _date
+        report_date = st.date_input("תאריך הדוח / עד תאריך", value=_date.today(),
+                                    key="cum_rdate", format="DD/MM/YYYY")
+    with c4:
+        source = st.selectbox("מקור", ["חשבשבת", "ידני", "אחר"], key="cum_source")
+
+    is_ledger = report_type == _LEDGER_LABEL
+
+    # ── 2. העלאת קובץ ──
+    sec("2. העלאת קובץ")
+    st.caption("ניתן להעלות דוח מצטבר (לדוגמה כרטסת 01/01/2025 → היום). "
+               "המערכת תשייך כל תנועה לחודש לפי תאריך התנועה.")
+    up = st.file_uploader(
+        f"קובץ {'כרטסת' if is_ledger else 'מאזן'} (xlsx/xls)",
+        type=["xlsx", "xls"], key=f"cum_up_{project_id}_{is_ledger}",
+    )
+    if up is None:
+        st.info("העלה קובץ כדי לראות תצוגה מקדימה.")
+        return
+
+    # ── 3. פענוח + תצוגה מקדימה ──
+    sec("3. תצוגה מקדימה")
+    if is_ledger:
+        df = _parse_uploaded(up, chashbashevet_loader.load_chashbashevet)
+        if df is None or df.empty:
+            st.error("לא זוהו תנועות בקובץ. ודא שזו כרטסת חשבשבת תקינה.")
+            return
+        st.caption(f"זוהו {len(df):,} תנועות. הצגת 50 הראשונות:")
+        prev = df[["date", "account_num", "account_name", "details",
+                   "debit", "credit", "amount", "supplier"]].head(50).copy()
+        _show_he(prev, {
+            "date": "תאריך", "account_num": "חשבון", "account_name": "שם חשבון",
+            "details": "פרטים", "debit": "חובה", "credit": "זכות",
+            "amount": "סכום נטו", "supplier": "ספק"})
+        _render_ledger_import_controls(
+            project_id, project_name, df, up.name, report_date, source)
+    else:
+        df = _parse_uploaded(up, balance_loader.load_balance)
+        if df is None or df.empty:
+            st.error("לא זוהו שורות מאזן בקובץ. ודא שזה מאזן בוחן תקין.")
+            return
+        df = df.copy()
+        df["account_type"] = df.apply(
+            lambda r: balance_store.classify_account_type(
+                r.get("account_num"), r.get("group", ""), r.get("account_name", "")),
+            axis=1)
+        st.caption(f"זוהו {len(df):,} חשבונות במאזן ליום {_fmt_d(report_date)}:")
+        prev = df[["account_num", "account_name", "account_type",
+                   "debit", "credit", "balance", "group"]].head(80).copy()
+        _show_he(prev, {
+            "account_num": "חשבון", "account_name": "שם חשבון",
+            "account_type": "סוג חשבון", "debit": "יתרת חובה",
+            "credit": "יתרת זכות", "balance": "יתרה נטו", "group": "קבוצה"})
+        _render_balance_import_controls(
+            project_id, project_name, df, up.name, report_date, source)
+
+
+def _render_ledger_import_controls(project_id, project_name, df, file_name,
+                                   report_date, source) -> None:
+    """בקרות יבוא לכרטסת: בחירת מצב, ניתוח, אישור."""
+    from core import ledger_store, db
+
+    sec("4. ניתוח ובחירת אופן היבוא")
+    mode_key = st.radio(
+        "אופן היבוא",
+        list(_MODE_LABELS.keys()),
+        format_func=lambda k: _MODE_LABELS[k],
+        key="cum_mode",
+    )
+    summary = ledger_store.analyze(project_id, df, mode_key)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("שורות בקובץ", f"{summary['rows_in_file']:,}")
+    m2.metric("תנועות חדשות", f"{summary['new_count']:,}")
+    m3.metric("כפילויות (ידולגו)", f"{summary['duplicate_count']:,}")
+    m4.metric("תנועות שהשתנו", f"{summary['updated_count']:,}")
+
+    m5, m6, m7, m8 = st.columns(4)
+    m5.metric("טווח תאריכים", f"{_fmt_d(summary['date_min'])} – {_fmt_d(summary['date_max'])}")
+    m6.metric("חודשים בקובץ", f"{len(summary['months'])}")
+    m7.metric('סה"כ חובה', format_currency(summary["debit_sum"]))
+    m8.metric('סה"כ זכות', format_currency(summary["credit_sum"]))
+
+    if summary["months"]:
+        st.caption("חודשים מושפעים: " + ", ".join(summary["months"]))
+    st.caption(f"מאגר לפני: {summary['store_before']:,} → אחרי: {summary['store_after']:,} תנועות")
+
+    # ── אזהרות בקרה ──
+    if summary["no_date_count"]:
+        ins("amber", "⚠️", "תנועות ללא תאריך",
+            f"{summary['no_date_count']} שורות ללא תאריך תקין — לא ישויכו לחודש ויידלגו.")
+    if summary["updated_count"] and mode_key == "add_new":
+        ins("amber", "🔁", "זוהו תנועות עם סכום שהשתנה",
+            f"{summary['updated_count']} תנועות קיימות עם סכום שונה. במצב "
+            "'הוסף רק חדשות' הן ייכנסו כתנועה נוספת. לתיקון רטרואקטיבי בחר "
+            "'החלף את כל הנתונים בטווח התאריכים'.")
+
+    is_check = mode_key == "check_only"
+    label = "🔎 הרץ בדיקה" if is_check else "✅ אשר ויבא"
+    if st.button(label, type="primary", use_container_width=True, key="cum_confirm"):
+        if is_check:
+            db.log_import(project_id, project_name, "ledger", file_name,
+                          str(report_date), source, mode_key, summary, "checked")
+            st.success("בדיקה הושלמה — לא בוצעה שמירה.")
+            _post_import_summary(summary, "ledger", file_name, report_date, saved=False)
+            return
+        with st.spinner("שומר תנועות ובונה מאסטר מחדש..."):
+            applied = ledger_store.apply_import(project_id, df, mode_key, file_name)
+            db.log_import(project_id, project_name, "ledger", file_name,
+                          str(report_date), source, mode_key, applied, "approved")
+            build_master()
+            st.cache_data.clear()
+        st.success("היבוא הושלם והדשבורד עודכן.")
+        _post_import_summary(applied, "ledger", file_name, report_date, saved=True)
+
+
+def _render_balance_import_controls(project_id, project_name, df, file_name,
+                                    report_date, source) -> None:
+    """בקרות יבוא למאזן: שמירת snapshot לפי תאריך (בקרה בלבד, לא תנועות)."""
+    from core import balance_store, db
+
+    sec("4. שמירת תצלום מאזן")
+    st.caption("המאזן נשמר כתצלום (snapshot) לפי תאריך דוח — לבקרה ויתרות "
+               "עד-תאריך. הוא **אינו** נשמר כתנועות (כדי למנוע כפילות).")
+
+    total_debit = float(df["debit"].sum())
+    total_credit = float(df["credit"].sum())
+    b1, b2, b3 = st.columns(3)
+    b1.metric("חשבונות במאזן", f"{len(df):,}")
+    b2.metric('סה"כ יתרת חובה', format_currency(total_debit))
+    b3.metric('סה"כ יתרת זכות', format_currency(total_credit))
+    gap = round(total_debit - total_credit, 2)
+    if abs(gap) > 1:
+        ins("amber", "⚠️", "אי-איזון במאזן",
+            f"הפרש חובה/זכות: {format_currency(gap)}. מאזן בוחן תקין אמור להתאזן.")
+
+    if st.button("💾 שמור תצלום מאזן", type="primary",
+                 use_container_width=True, key="cum_bal_confirm"):
+        n = balance_store.save_snapshot(project_id, df, report_date, file_name)
+        summary = {
+            "rows_in_file": len(df), "new_count": n, "duplicate_count": 0,
+            "updated_count": 0, "months": [],
+            "date_min": report_date, "date_max": report_date,
+            "debit_sum": total_debit, "credit_sum": total_credit,
+            "no_date_count": 0, "no_amount_count": 0,
+            "store_before": 0, "store_after": n,
+        }
+        db.log_import(project_id, project_name, "balance", file_name,
+                      str(report_date), source, "snapshot", summary, "approved")
+        st.cache_data.clear()
+        st.success(f"תצלום מאזן ליום {_fmt_d(report_date)} נשמר ({n} חשבונות).")
+        _post_import_summary(summary, "balance", file_name, report_date, saved=True)
+
+
+def _post_import_summary(summary, report_type, file_name, report_date, saved) -> None:
+    """מסך סיכום אחרי יבוא (פריט 10 במפרט)."""
+    rt_he = "כרטסת" if report_type == "ledger" else "מאזן בוחן"
+    rows = [
+        ("שם קובץ", file_name),
+        ("סוג דוח", rt_he),
+        ("תאריך דוח", _fmt_d(report_date)),
+        ("שורות בקובץ", f"{summary.get('rows_in_file', 0):,}"),
+        ("שורות חדשות", f"{summary.get('new_count', 0):,}"),
+        ("כפילויות", f"{summary.get('duplicate_count', 0):,}"),
+        ("שורות שגויות", f"{summary.get('no_date_count', 0) + summary.get('no_amount_count', 0):,}"),
+        ("טווח תאריכים", f"{_fmt_d(summary.get('date_min'))} – {_fmt_d(summary.get('date_max'))}"),
+        ("חודשים מושפעים", ", ".join(summary.get("months", [])) or "—"),
+        ('סה"כ חובה', format_currency(summary.get("debit_sum", 0))),
+        ('סה"כ זכות', format_currency(summary.get("credit_sum", 0))),
+    ]
+    cells = "".join(
+        f'<tr><td style="padding:6px 10px;font-weight:600;color:var(--ink-soft)">{k}</td>'
+        f'<td style="padding:6px 10px;color:var(--ink-strong);font-weight:700">{v}</td></tr>'
+        for k, v in rows
+    )
+    badge = ("נשמר ✓" if saved else "בדיקה בלבד")
+    st.markdown(
+        f'<div style="border:1px solid var(--line);border-radius:10px;'
+        f'overflow:hidden;margin-top:8px"><div style="padding:8px 12px;'
+        f'background:linear-gradient(135deg,#F0FDF4,#fff);font-weight:800;'
+        f'color:var(--ink-strong)">סיכום יבוא — {badge}</div>'
+        f'<table style="width:100%;border-collapse:collapse">{cells}</table></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_import_history(projects: list[dict]) -> None:
+    """תצוגת היסטוריית יבוא (import_log)."""
+    from core import db
+
+    sec("היסטוריית יבוא")
+    names = ["כל הפרויקטים"] + [p["project_name"] for p in projects]
+    pick = st.selectbox("סינון לפי פרויקט", names, key="hist_project")
+    pid = None
+    if pick != "כל הפרויקטים":
+        pid = next(p["project_id"] for p in projects if p["project_name"] == pick)
+
+    hist = db.import_history(pid)
+    if hist is None or hist.empty:
+        empty_state(icon="ti-history-off", title="אין עדיין היסטוריית יבוא",
+                    body_html="לאחר יבוא דוח ראשון, הוא יופיע כאן.")
+        return
+
+    rt_map = {"ledger": "כרטסת", "balance": "מאזן"}
+    st_map = {"approved": "אושר ויובא", "checked": "בדיקה בלבד", "failed": "נכשל"}
+    disp = hist[["timestamp", "project_name", "report_type", "file_name",
+                 "report_date", "source", "mode", "rows_in_file", "new_rows",
+                 "duplicate_rows", "updated_rows", "months_affected", "status"]].copy()
+    disp["report_type"] = disp["report_type"].map(rt_map).fillna(disp["report_type"])
+    disp["status"] = disp["status"].map(st_map).fillna(disp["status"])
+    disp["mode"] = disp["mode"].map(_MODE_LABELS).fillna(disp["mode"])
+    _show_he(disp, {
+        "timestamp": "מועד העלאה", "project_name": "פרויקט",
+        "report_type": "סוג דוח", "file_name": "קובץ",
+        "report_date": "תאריך דוח", "source": "מקור", "mode": "אופן",
+        "rows_in_file": "שורות בקובץ", "new_rows": "חדשות",
+        "duplicate_rows": "כפילויות", "updated_rows": "עודכנו",
+        "months_affected": "חודשים", "status": "סטטוס"})

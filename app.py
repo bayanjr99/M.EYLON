@@ -126,6 +126,10 @@ if current_view == "comparisons":
     # מסך השוואות (בין חודשים / בין פרויקטים)
     from ui.pages.comparisons_view import render_comparisons_page
     render_comparisons_page(df_master, projects)
+elif current_view == "import":
+    # מסך יבוא דוחות (כרטסת/מאזן מצטבר + קבצי חודש + היסטוריה)
+    from ui.pages.import_data import render_import_page
+    render_import_page(projects)
 elif selected_project_id:
     # מסך פרויקט בודד
     project_meta = next(
@@ -140,13 +144,19 @@ elif selected_project_id:
     else:
         render_project_detail(df_master, project_meta)
 else:
-    # מסך נחיתה — רשימת פרויקטים + כפתור השוואות
-    nav1, _ = st.columns([1, 5])
+    # מסך נחיתה — רשימת פרויקטים + כפתורי ניווט
+    nav1, nav2, _ = st.columns([1, 1, 4])
     with nav1:
         if st.button("📊 השוואות", key="open_comparisons",
                      use_container_width=True,
                      help="השווה בין חודשים או בין פרויקטים"):
             st.session_state["view"] = "comparisons"
+            st.rerun()
+    with nav2:
+        if st.button("📥 יבוא דוחות", key="open_import",
+                     use_container_width=True,
+                     help="העלה דוח כרטסת/מאזן מצטבר — עדכון אוטומטי לפי תאריך"):
+            st.session_state["view"] = "import"
             st.rerun()
     render_projects_list(df_master, projects)
 

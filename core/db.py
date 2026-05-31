@@ -81,6 +81,29 @@ CREATE TABLE IF NOT EXISTS transaction_notes (
     created_at      TEXT NOT NULL,
     FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS import_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,           -- ISO upload time
+    project_id      TEXT,
+    project_name    TEXT,
+    report_type     TEXT,                    -- ledger / balance
+    file_name       TEXT,
+    report_date     TEXT,                    -- ISO report/update date
+    source          TEXT,                    -- chashbashevet / manual / other
+    mode            TEXT,                    -- add_new / replace_range / check_only
+    rows_in_file    INTEGER,
+    new_rows        INTEGER,
+    duplicate_rows  INTEGER,
+    updated_rows    INTEGER,
+    error_rows      INTEGER,
+    months_affected TEXT,                    -- comma-joined MM-YYYY
+    status          TEXT,                    -- approved / checked / failed
+    details         TEXT                     -- JSON blob
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_proj ON import_log(project_id);
+CREATE INDEX IF NOT EXISTS idx_import_time ON import_log(timestamp);
 """
 
 
@@ -185,6 +208,64 @@ def recent_events(limit: int = 50) -> pd.DataFrame:
             "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?",
             conn, params=[limit],
         )
+
+
+def log_import(project_id: str, project_name: str, report_type: str,
+               file_name: str, report_date: str | None, source: str,
+               mode: str, summary: dict, status: str) -> int:
+    """רושם שורת היסטוריית יבוא. מחזיר import_id.
+
+    Args:
+        report_type: 'ledger' (כרטסת) או 'balance' (מאזן).
+        summary: ה-dict מ-ledger_store.analyze/apply_import.
+        status: 'approved' / 'checked' / 'failed'.
+    """
+    init()
+    months = summary.get("months", []) or []
+    payload = json.dumps({
+        "date_min": str(summary.get("date_min", "")),
+        "date_max": str(summary.get("date_max", "")),
+        "debit_sum": summary.get("debit_sum", 0),
+        "credit_sum": summary.get("credit_sum", 0),
+        "store_before": summary.get("store_before", 0),
+        "store_after": summary.get("store_after", 0),
+    }, ensure_ascii=False, default=str)
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO import_log
+               (timestamp, project_id, project_name, report_type, file_name,
+                report_date, source, mode, rows_in_file, new_rows,
+                duplicate_rows, updated_rows, error_rows, months_affected,
+                status, details)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                project_id, project_name, report_type, file_name,
+                report_date, source, mode,
+                int(summary.get("rows_in_file", 0)),
+                int(summary.get("new_count", 0)),
+                int(summary.get("duplicate_count", 0)),
+                int(summary.get("updated_count", 0)),
+                int(summary.get("no_date_count", 0) + summary.get("no_amount_count", 0)),
+                ", ".join(months),
+                status, payload,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def import_history(project_id: str | None = None, limit: int = 100) -> pd.DataFrame:
+    """מחזיר היסטוריית יבוא (אופציונלית מסוננת לפרויקט)."""
+    init()
+    sql = "SELECT * FROM import_log"
+    params: list = []
+    if project_id:
+        sql += " WHERE project_id = ?"
+        params.append(project_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _connect() as conn:
+        return pd.read_sql(sql, conn, params=params)
 
 
 def add_note(project_id: str, account_num: int | None, date: str | None,
