@@ -424,31 +424,20 @@ def render_projects_list(df_master: pd.DataFrame, projects: list[dict]) -> None:
     # ── סקירה כללית של כל החברה (סיכום פורטפוליו) ──
     _render_portfolio_overview(df_master, projects)
 
-    # ── פילטר סטטוס: ארכיון מוסתר כברירת מחדל ──
-    # "פעילים בלבד" (ברירת מחדל) מציג active+future+paused.
-    # "הכל ללא ארכיון" מציג את כל הסטטוסים פרט ל-archived.
-    # "כולל ארכיון" מציג גם פרויקטים בארכיון.
-    filter_options = (
-        ["פעילים בלבד", "הכל ללא ארכיון"]
-        + [STATUS_HE[s] for s in VALID_STATUSES]
-        + ["כולל ארכיון"]
-    )
+    # ── פילטר סטטוס: הכל / פעיל / הסתיים / עתידי / ארכיון ──
+    # "הכל" (ברירת מחדל) מציג את כל הפרויקטים. שאר האופציות מסננות
+    # לפי הסטטוס הספציפי.
+    STATUS_FILTER_ORDER = ["active", "completed", "future", "archived"]
+    filter_options = ["הכל"] + [STATUS_HE[s] for s in STATUS_FILTER_ORDER]
     f_col, _ = st.columns([1, 3])
     with f_col:
         chosen = st.selectbox("פילטר לפי סטטוס", filter_options, index=0,
                                 key="proj_status_filter")
 
-    if chosen == "פעילים בלבד":
-        filtered = [p for p in projects
-                    if validate_project_status(p.get("status"))
-                       in ("active", "future", "paused")]
-    elif chosen == "הכל ללא ארכיון":
-        filtered = [p for p in projects
-                    if validate_project_status(p.get("status")) != "archived"]
-    elif chosen == "כולל ארכיון":
+    if chosen == "הכל":
         filtered = projects
     else:
-        # סטטוס ספציפי שנבחר (פעיל / הסתיים / עתידי / מושהה / ארכיון)
+        # סטטוס ספציפי שנבחר (פעיל / הסתיים / עתידי / ארכיון)
         target = next((k for k, v in STATUS_HE.items() if v == chosen), None)
         filtered = [p for p in projects
                     if validate_project_status(p.get("status")) == target]
