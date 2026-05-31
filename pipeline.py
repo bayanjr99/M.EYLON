@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = PROJECT_ROOT / "data"
 PROJECTS_ROOT = DATA_ROOT / "projects"
+# נתונים שהוזנו ידנית — אחסון קבוע *עוקב-git* (לא תחת projects/ שמוחרג).
+# מסונכרן לענן ב-push, וניתן לפתיחה/גיבוי ידני (xlsx).
+MANUAL_ROOT = DATA_ROOT / "manual"
 PROJECTS_REGISTRY = DATA_ROOT / "projects_registry.xlsx"
 TOOLS_REGISTRY = DATA_ROOT / "tools_registry.xlsx"
 MASTER_PARQUET = DATA_ROOT / "master.parquet"

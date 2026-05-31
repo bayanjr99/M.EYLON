@@ -452,18 +452,54 @@ def prepare_incoming(kind: str, df: pd.DataFrame) -> pd.DataFrame:
 
 # ── נתיב + I/O ─────────────────────────────────────────────────
 def _store_path(project_id: str, kind: str) -> Path:
-    """נתיב קובץ המאגר לפרויקט + סוג דוח."""
+    """נתיב קובץ המאגר (parquet קנוני) לפרויקט + סוג דוח.
+
+    מאוחסן תחת data/manual/<project_id>/ — תיקייה *עוקבת-git* (לא מוחרגת),
+    כך שהנתונים נשמרים קבוע ומסונכרנים לענן ב-push.
+    """
+    from pipeline import MANUAL_ROOT
+    return MANUAL_ROOT / project_id / KINDS[kind]["store_file"]
+
+
+def _xlsx_path(project_id: str, kind: str) -> Path:
+    """נתיב מראָה ה-xlsx הקריאה (לפתיחה/גיבוי ידני)."""
+    from pipeline import MANUAL_ROOT
+    name = "fuel_manual.xlsx" if kind == "solar" else "hours_manual.xlsx"
+    return MANUAL_ROOT / project_id / name
+
+
+def _legacy_store_path(project_id: str, kind: str) -> Path:
+    """המיקום הישן (מוחרג-git) — לצורך מיגרציה חד-פעמית."""
     from pipeline import PROJECTS_ROOT
     return PROJECTS_ROOT / project_id / KINDS[kind]["store_file"]
 
 
+def _migrate_legacy(project_id: str, kind: str) -> None:
+    """מעביר מאגר מהמיקום הישן (data/projects) לחדש (data/manual) פעם אחת."""
+    new = _store_path(project_id, kind)
+    if new.exists():
+        return
+    old = _legacy_store_path(project_id, kind)
+    if not old.exists():
+        return
+    try:
+        import shutil
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old, new)
+        logger.info("Migrated manual %s store: %s -> %s", kind, old, new)
+    except Exception as e:
+        logger.warning("Legacy migration failed for %s/%s: %s", project_id, kind, e)
+
+
 def has_store(project_id: str, kind: str) -> bool:
     """האם קיים מאגר ידני מסוג זה לפרויקט."""
+    _migrate_legacy(project_id, kind)
     return _store_path(project_id, kind).exists()
 
 
 def load_store(project_id: str, kind: str) -> pd.DataFrame:
     """טוען את המאגר הידני. ריק אם לא קיים."""
+    _migrate_legacy(project_id, kind)
     path = _store_path(project_id, kind)
     if not path.exists():
         return empty_frame(kind)
@@ -511,21 +547,93 @@ def save_store(project_id: str, kind: str, df: pd.DataFrame) -> int:
     if len(reread) != len(df):
         raise RuntimeError(
             f"אימות השמירה נכשל: נכתבו {len(df)} שורות אך נקראו {len(reread)}.")
+    # ── מראָה xlsx קריאה (לפתיחה/גיבוי ידני) — best-effort ──
+    _write_xlsx_mirror(project_id, kind, df)
     logger.info("Saved + verified manual %s store (%d rows) to %s",
                 kind, len(reread), path)
     return len(reread)
 
 
+def _write_xlsx_mirror(project_id: str, kind: str, df: pd.DataFrame) -> None:
+    """כותב עותק xlsx קריא (כותרות עברית) לצד ה-parquet. אינו חוסם בכשל."""
+    xpath = _xlsx_path(project_id, kind)
+    try:
+        labels = column_labels(kind)
+        keys = [k for k in column_keys(kind) if k in df.columns]
+        disp = df[keys].rename(columns=labels)
+        with pd.ExcelWriter(xpath, engine="openpyxl") as w:
+            disp.to_excel(w, index=False, sheet_name="נתונים")
+    except Exception as e:
+        logger.warning("xlsx mirror write failed for %s/%s: %s", project_id, kind, e)
+
+
+def _import_log_path() -> Path:
+    """נתיב קובץ לוג היבוא הידני (xlsx, גלובלי)."""
+    from pipeline import MANUAL_ROOT
+    return MANUAL_ROOT / "import_log.xlsx"
+
+
+def append_import_log(project_id: str, project_name: str, kind: str,
+                      month: str, summary: dict, status: str,
+                      user: str = "") -> None:
+    """מוסיף שורה ל-data/manual/import_log.xlsx. אינו חוסם בכשל."""
+    path = _import_log_path()
+    row = {
+        "תאריך ושעה": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "סוג דוח": KINDS.get(kind, {}).get("label", kind),
+        "פרויקט": project_name,
+        "project_id": project_id,
+        "חודש": month or ", ".join(summary.get("saved_months", []) or []),
+        "שורות שנשמרו": int(summary.get("saved_count", summary.get("valid_count", 0))),
+        "חדשות": int(summary.get("new_count", 0)),
+        "כפילויות": int(summary.get("duplicate_count", 0)),
+        "עודכנו": int(summary.get("updated_count", 0)),
+        'סה"כ בקובץ': int(summary.get("store_after", 0)),
+        "סטטוס": status,
+        "משתמש": user or "",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = pd.read_excel(path) if path.exists() else pd.DataFrame()
+        out = pd.concat([existing, pd.DataFrame([row])], ignore_index=True)
+        with pd.ExcelWriter(path, engine="openpyxl") as w:
+            out.to_excel(w, index=False, sheet_name="log")
+    except Exception as e:
+        logger.warning("append_import_log failed (non-fatal): %s", e)
+
+
+def read_import_log(project_id: str | None = None) -> pd.DataFrame:
+    """קורא את לוג היבוא הידני מ-xlsx (אופציונלית מסונן לפרויקט)."""
+    path = _import_log_path()
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(path)
+    except Exception as e:
+        logger.warning("read_import_log failed: %s", e)
+        return pd.DataFrame()
+    if project_id and "project_id" in df.columns:
+        df = df[df["project_id"] == project_id]
+    return df.iloc[::-1].reset_index(drop=True)  # החדש למעלה
+
+
 def delete_store(project_id: str, kind: str) -> bool:
-    """מוחק את המאגר. מחזיר True אם נמחק."""
+    """מוחק את המאגר (parquet + מראָת xlsx). מחזיר True אם נמחק."""
     path = _store_path(project_id, kind)
+    deleted = False
     if path.exists():
         try:
             path.unlink()
-            return True
+            deleted = True
         except Exception as e:
             logger.warning("Failed to delete manual %s store: %s", kind, e)
-    return False
+    xpath = _xlsx_path(project_id, kind)
+    if xpath.exists():
+        try:
+            xpath.unlink()
+        except Exception as e:
+            logger.warning("Failed to delete xlsx mirror: %s", e)
+    return deleted
 
 
 # ── ולידציה ואבחון ─────────────────────────────────────────────

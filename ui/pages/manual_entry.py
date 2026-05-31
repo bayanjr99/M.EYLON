@@ -37,6 +37,14 @@ _MODE_LABELS = {
 _UNMAPPED = "— לא ממופה —"
 
 
+def _is_cloud() -> bool:
+    """האם רצים על Streamlit Cloud (מערכת קבצים זמנית)."""
+    import os
+    from pathlib import Path
+    return (Path("/mount/src").exists()
+            or os.environ.get("HOME", "").startswith("/home/adminuser"))
+
+
 # ── עזרי המרה ─────────────────────────────────────────────────
 def _parse_tsv_raw(text: str) -> pd.DataFrame | None:
     """מפרק טקסט מודבק (TAB + שורות) ל-DataFrame מיקומי (עמודות 0..n)."""
@@ -111,8 +119,6 @@ def _step_bar(active: int) -> None:
 # ── תת-טאב לכל סוג דוח ─────────────────────────────────────────
 def _render_kind(kind: str, projects: list[dict]) -> None:
     """מצייר את מסך ההזנה לסוג דוח בודד (solar / hours)."""
-    from core import db
-
     labels = manual_store.column_labels(kind)
     keys = manual_store.column_keys(kind)
 
@@ -139,8 +145,26 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
         target_month = month_date.strftime("%m-%Y")
 
     existing = manual_store.load_store(project_id, kind)
-    st.caption(f"במאגר כעת: {len(existing):,} שורות · כל שורה משויכת לחודש לפי "
-               "התאריך שבה — אין צורך למלא חודש בכל שורה.")
+    ec1, ec2 = st.columns([3, 1])
+    with ec1:
+        st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר בקובץ קבוע "
+                   "(data/manual/) שמסונכרן ב-git · כל שורה משויכת לחודש לפי "
+                   "התאריך שבה — אין צורך למלא חודש בכל שורה.")
+    with ec2:
+        if not existing.empty:
+            st.download_button(
+                "⬇️ גיבוי המאגר (אקסל)", data=_to_excel_bytes(kind, existing),
+                file_name=f"{kind}_{project_id}_backup.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{base}_backup", use_container_width=True)
+
+    # ── אזהרת ענן: מערכת קבצים זמנית ──
+    if _is_cloud():
+        ins("amber", "☁️", "אתה מריץ על Streamlit Cloud — שמירה זמנית!",
+            "קבצים שנכתבים בענן עלולים להימחק ב-restart/redeploy. כדי לשמור "
+            "את הנתונים לצמיתות: הורד את הגיבוי (כפתור למעלה) והעלה אותו "
+            "מקומית, או הזן מקומית ובצע push. (אפשר לעבור לאחסון ענן קבוע "
+            "כמו Supabase/Sheets בכל עת.)")
 
     # ── תוצאת השמירה האחרונה (שורדת rerun; מוצגת בכל שלב) ──
     res = st.session_state.get(f"{base}_save_result")
@@ -362,6 +386,9 @@ def _do_save(kind: str, project_id: str, project_name: str,
             result.update({
                 "ok": ok,
                 "saved_count": applied.get("saved_count", applied.get("valid_count", 0)),
+                "new_count": applied.get("new_count", 0),
+                "duplicate_count": applied.get("duplicate_count", 0),
+                "updated_count": applied.get("updated_count", 0),
                 "verified_rows": applied.get("verified_rows", 0),
                 "store_after": applied.get("store_after", 0),
                 "store_path": applied.get("store_path", ""),
@@ -370,12 +397,18 @@ def _do_save(kind: str, project_id: str, project_name: str,
                 "months_found": master_chk["months_found"],
             })
             status = "approved" if ok else "failed"
+            # לוג כפול: SQLite (קיים) + xlsx קריא (data/manual/import_log.xlsx)
             try:
                 db.log_import(project_id, project_name, f"manual_{kind}",
                               "הזנה ידנית", target_month, "ידני", mode_key,
                               applied, status)
             except Exception as e:
                 logger.warning("log_import failed (non-fatal): %s", e)
+            try:
+                manual_store.append_import_log(
+                    project_id, project_name, kind, target_month, applied, status)
+            except Exception as e:
+                logger.warning("append_import_log failed (non-fatal): %s", e)
     except Exception as e:
         logger.exception("manual save failed: %s", e)
         result["error"] = str(e)
@@ -407,45 +440,38 @@ def _render_save_result(kind: str, res: dict) -> None:
     st.success(
         f"✅ נשמרו ואומתו {res.get('saved_count', 0):,} שורות {kind_label} "
         f"לחודש {months} בפרויקט {proj}.")
-    ins("green", "✔️", "אימות מלא עבר בהצלחה",
+    ins("green", "✔️", "פירוט השמירה",
+        f"שורות חדשות: {res.get('new_count', 0):,} · "
+        f"כפילויות שדולגו: {res.get('duplicate_count', 0):,} · "
+        f"עודכנו: {res.get('updated_count', 0):,} · "
+        f'סה"כ בקובץ אחרי שמירה: {res.get("store_after", 0):,} שורות.')
+    ins("blue", "🔎", "אימות מלא עבר בהצלחה",
         f"מאגר: {res.get('verified_rows', 0):,} שורות נקראו חזרה מהדיסק · "
         f"master: {res.get('rows_in_master', 0):,} שורות ל-{kind_label} "
         f"בחודשים {', '.join(res.get('months_found', [])) or '—'} · "
         "הדשבורד עודכן — הנתונים יופיעו בכל הטאבים והגרפים.")
-    st.caption(f"מיקום המאגר: {res.get('store_path', '')}")
+    st.caption(f"מיקום הקובץ הקבוע: {res.get('store_path', '')}")
 
 
 def _render_history(kind: str, project_id: str) -> None:
-    """מציג היסטוריית הזנות ידניות מתוך לוג היבוא (db.import_history)."""
-    from core import db
+    """מציג היסטוריית הזנות ידניות מתוך data/manual/import_log.xlsx."""
     with st.expander("📜 היסטוריית הזנות ידניות", expanded=False):
         try:
-            hist = db.import_history(project_id, limit=50)
+            hist = manual_store.read_import_log(project_id)
         except Exception as e:
             st.caption(f"לא ניתן לטעון היסטוריה: {e}")
             return
         if hist.empty:
             st.caption("אין עדיין הזנות ידניות מתועדות לפרויקט זה.")
             return
-        # רק הזנות ידניות (source = 'ידני')
-        if "source" in hist.columns:
-            hist = hist[hist["source"] == "ידני"]
-        if hist.empty:
-            st.caption("אין עדיין הזנות ידניות מתועדות לפרויקט זה.")
-            return
-        cols = {
-            "timestamp": "תאריך הזנה", "report_type": "סוג דוח",
-            "project_name": "פרויקט", "months_affected": "חודשים",
-            "new_rows": "שורות חדשות", "duplicate_rows": "כפילויות",
-            "mode": "אופן", "status": "סטטוס",
-        }
-        show = [c for c in cols if c in hist.columns]
-        disp = hist[show].rename(columns=cols)
-        if "סטטוס" in disp.columns:
-            disp["סטטוס"] = disp["סטטוס"].map(
+        if "סטטוס" in hist.columns:
+            hist["סטטוס"] = hist["סטטוס"].map(
                 {"approved": "✅ נשמר", "failed": "⛔ נכשל",
-                 "checked": "🔍 נבדק"}).fillna(disp["סטטוס"])
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+                 "checked": "🔍 נבדק"}).fillna(hist["סטטוס"])
+        drop = [c for c in ("project_id",) if c in hist.columns]
+        st.dataframe(hist.drop(columns=drop), use_container_width=True,
+                     hide_index=True)
+        st.caption(f"מקור: {manual_store._import_log_path()}")
 
 
 def _reset_state(base: str) -> None:

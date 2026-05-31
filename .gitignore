@@ -1,6 +1,11 @@
 # Raw customer data - kept local even in private repo
 data/projects/*/
 
+# Manual data entry (solar/hours) — INTENTIONALLY TRACKED so it syncs to
+# Streamlit Cloud and survives redeploy. Repo MUST stay private.
+# Stored under data/manual/** (parquet + xlsx mirror + import_log.xlsx).
+!data/manual/
+
 # master.parquet (processed) is pushed so Streamlit Cloud renders the data.
 # site_tracking.parquet too (operational tracking from xlsx).
 # fuel_tracker.parquet too (rich fuel-log from "מעקב סולר וטיפולים" xlsx).
