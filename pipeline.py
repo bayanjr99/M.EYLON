@@ -94,19 +94,29 @@ def coerce_master_numeric(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def list_available_projects() -> list[dict]:
-    """מחזיר רשימת פרויקטים פעילים מתוך projects_registry.xlsx.
+    """מחזיר רשימת פרויקטים פעילים.
+
+    המקור הוא ``project_store.load_projects_registry`` — כש-Neon מוגדר
+    הוא מקור האמת (הפרויקטים שורדים reboot), אחרת קובץ מקומי. כך מסך
+    הפרויקטים תמיד מציג את אותם נתונים שנשמרו ב-Neon.
 
     Returns:
         רשימת dicts עם: project_id, project_name, site_name (לסינון solar), status.
     """
-    if not PROJECTS_REGISTRY.exists():
-        logger.warning("projects_registry.xlsx not found at %s", PROJECTS_REGISTRY)
-        return []
     try:
-        df = pd.read_excel(PROJECTS_REGISTRY)
+        from core import project_store
+        df = project_store.load_projects_registry()
+        if df is None or df.empty:
+            return []
         return df.to_dict(orient="records")
     except Exception as e:
-        logger.exception("Failed to load projects_registry: %s", e)
+        logger.exception("Failed to load projects registry: %s", e)
+        # נפילה אחורה לקובץ המקומי הישיר אם project_store נכשל
+        if PROJECTS_REGISTRY.exists():
+            try:
+                return pd.read_excel(PROJECTS_REGISTRY).to_dict(orient="records")
+            except Exception:
+                pass
         return []
 
 

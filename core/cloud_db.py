@@ -135,6 +135,28 @@ def _ensure_schema(conn) -> None:
             )
             """
         )
+        # ── טבלת פרויקטים (Part 7: Neon כמקור אמת לפרויקטים) ──
+        # source-of-truth לרשימת הפרויקטים. הקבצים המקומיים
+        # (projects_registry.xlsx / project_meta.json) הם mirror בלבד.
+        # is_deleted = soft-delete (לא מוחקים שורה — מסמנים, להפיכות).
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                project_id   TEXT PRIMARY KEY,
+                project_name TEXT NOT NULL,
+                site_name    TEXT,
+                client_name  TEXT,
+                status       TEXT,
+                start_date   TEXT,
+                end_date     TEXT,
+                notes        TEXT,
+                is_deleted   BOOLEAN DEFAULT FALSE,
+                created_at   TIMESTAMPTZ DEFAULT now(),
+                updated_at   TIMESTAMPTZ DEFAULT now(),
+                raw_payload  JSONB
+            )
+            """
+        )
 
 
 def ensure_schema() -> bool:
@@ -414,3 +436,212 @@ def delete_project_kind(project_id: str, kind: str) -> int:
     except Exception as e:
         logger.exception("Neon delete_project_kind failed: %s", e)
         return 0
+
+
+# ══ פרויקטים — Neon כמקור אמת (Part 7) ══════════════════════════
+# העמודות הנשמרות בטבלת projects (תואם REGISTRY_COLS ב-project_store).
+PROJECT_COLS = ["project_id", "project_name", "site_name", "client_name",
+                "status", "start_date", "end_date", "notes"]
+
+
+def _project_field_eq(field: str, expected, actual) -> bool:
+    """השוואה סלחנית בין ערך מבוקש לערך שנקרא חזרה מ-Neon (read-back)."""
+    def _norm(v):
+        try:
+            if v is None or (not isinstance(v, str) and pd.isna(v)):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        return str(v).strip()
+    return _norm(expected) == _norm(actual)
+
+
+def save_project(row: dict, mode: str = "upsert") -> dict:
+    """שומר פרויקט בודד ל-Neon (UPSERT) ומאמת בקריאה חוזרת.
+
+    Neon הוא מקור האמת — רק אם ``neon_verified_ok`` חוזר True מותר
+    להציג "נשמר". העמודות נכתבות גם כשדות וגם ל-raw_payload (JSONB).
+
+    Args:
+        row: dict עם מפתחות PROJECT_COLS (לפחות project_id + project_name).
+        mode: "upsert" (ברירת מחדל) — INSERT או עדכון אם קיים.
+
+    Returns:
+        dict: {neon_saved, neon_verified_ok, mismatches, error?}.
+    """
+    res = {"neon_saved": False, "neon_verified_ok": False, "mismatches": []}
+    pid = str(row.get("project_id") or "").strip()
+    if not pid or not is_configured():
+        return res
+
+    vals = {c: ("" if row.get(c) is None else str(row.get(c)).strip())
+            for c in PROJECT_COLS}
+    payload = {c: vals[c] for c in PROJECT_COLS}
+    try:
+        from psycopg.types.json import Jsonb
+        with _connect() as conn:
+            _ensure_schema(conn)
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO projects
+                          (project_id, project_name, site_name, client_name,
+                           status, start_date, end_date, notes,
+                           is_deleted, updated_at, raw_payload)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s, FALSE, now(), %s)
+                        ON CONFLICT (project_id) DO UPDATE SET
+                          project_name = EXCLUDED.project_name,
+                          site_name    = EXCLUDED.site_name,
+                          client_name  = EXCLUDED.client_name,
+                          status       = EXCLUDED.status,
+                          start_date   = EXCLUDED.start_date,
+                          end_date     = EXCLUDED.end_date,
+                          notes        = EXCLUDED.notes,
+                          is_deleted   = FALSE,
+                          updated_at   = now(),
+                          raw_payload  = EXCLUDED.raw_payload
+                        """,
+                        (vals["project_id"], vals["project_name"],
+                         vals["site_name"], vals["client_name"], vals["status"],
+                         vals["start_date"], vals["end_date"], vals["notes"],
+                         Jsonb(payload)))
+            # ── read-back: קרא חזרה מ-Neon ואמת שהשדות תואמים ──
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT project_name, site_name, client_name, status, "
+                    "start_date, end_date, notes, is_deleted "
+                    "FROM projects WHERE project_id=%s", (pid,))
+                got = cur.fetchone()
+        if got is None:
+            res["error"] = "read-back: הפרויקט לא נמצא ב-Neon אחרי שמירה"
+            return res
+        saved = {
+            "project_name": got[0], "site_name": got[1], "client_name": got[2],
+            "status": got[3], "start_date": got[4], "end_date": got[5],
+            "notes": got[6],
+        }
+        mism = [c for c in saved if not _project_field_eq(c, vals[c], saved[c])]
+        if bool(got[7]):  # is_deleted עדיין True — לא אמור לקרות
+            mism.append("is_deleted")
+        res["neon_saved"] = True
+        res["mismatches"] = mism
+        res["neon_verified_ok"] = not mism
+        logger.info("Neon save_project %s verified_ok=%s mismatches=%s",
+                    pid, res["neon_verified_ok"], mism)
+    except Exception as e:
+        logger.exception("Neon save_project failed for %s: %s", pid, e)
+        res["error"] = str(e)
+    return res
+
+
+def load_projects(include_deleted: bool = False) -> pd.DataFrame:
+    """טוען את כל הפרויקטים מ-Neon כ-DataFrame (עמודות PROJECT_COLS).
+
+    מחזיר DataFrame ריק (עם העמודות) אם אין Neon / אין נתונים / שגיאה.
+    כברירת מחדל מסנן פרויקטים מסומנים כמחוקים (is_deleted=TRUE).
+    """
+    empty = pd.DataFrame(columns=PROJECT_COLS)
+    if not is_configured():
+        return empty
+    try:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            sql = ("SELECT project_id, project_name, site_name, client_name, "
+                   "status, start_date, end_date, notes FROM projects")
+            if not include_deleted:
+                sql += " WHERE is_deleted = FALSE"
+            sql += " ORDER BY project_id"
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+    except Exception as e:
+        logger.exception("Neon load_projects failed: %s", e)
+        return empty
+    if not rows:
+        return empty
+    df = pd.DataFrame(rows, columns=PROJECT_COLS)
+    for c in PROJECT_COLS:
+        df[c] = df[c].fillna("").astype(str)
+    return df
+
+
+def load_project(project_id: str) -> dict | None:
+    """מחזיר dict של פרויקט בודד מ-Neon, או None אם לא קיים/מחוק."""
+    pid = (project_id or "").strip()
+    if not pid or not is_configured():
+        return None
+    try:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT project_id, project_name, site_name, client_name, "
+                    "status, start_date, end_date, notes FROM projects "
+                    "WHERE project_id=%s AND is_deleted = FALSE", (pid,))
+                got = cur.fetchone()
+    except Exception as e:
+        logger.exception("Neon load_project failed for %s: %s", pid, e)
+        return None
+    if got is None:
+        return None
+    return {c: ("" if v is None else str(v)) for c, v in zip(PROJECT_COLS, got)}
+
+
+def project_exists(project_id: str) -> bool:
+    """האם פרויקט פעיל (לא מחוק) קיים ב-Neon."""
+    return load_project(project_id) is not None
+
+
+def verify_project(project_id: str, expected: dict | None = None) -> dict:
+    """אימות נוכחות + תוכן של פרויקט ב-Neon (read-back מהמקור).
+
+    Returns:
+        dict: {ok, in_neon, mismatches:[...], backend:"neon"}.
+    """
+    res = {"ok": False, "in_neon": False, "mismatches": [], "backend": "neon"}
+    saved = load_project(project_id)
+    res["in_neon"] = saved is not None
+    if saved is None:
+        return res
+    if expected:
+        res["mismatches"] = [
+            k for k in PROJECT_COLS
+            if k in expected and not _project_field_eq(k, expected[k], saved.get(k))
+        ]
+    res["ok"] = res["in_neon"] and not res["mismatches"]
+    return res
+
+
+def delete_project(project_id: str, hard: bool = False) -> dict:
+    """מחיקת פרויקט מ-Neon. כברירת מחדל soft-delete (is_deleted=TRUE).
+
+    soft-delete הוא הפיך (הפרויקט נשאר בטבלה, רק מוסתר). hard=True
+    מוחק את השורה לצמיתות — לשימוש זהיר בלבד.
+
+    Returns:
+        dict: {neon_deleted, neon_verified_ok, error?}.
+    """
+    res = {"neon_deleted": False, "neon_verified_ok": False}
+    pid = (project_id or "").strip()
+    if not pid or not is_configured():
+        return res
+    try:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    if hard:
+                        cur.execute(
+                            "DELETE FROM projects WHERE project_id=%s", (pid,))
+                    else:
+                        cur.execute(
+                            "UPDATE projects SET is_deleted=TRUE, updated_at=now() "
+                            "WHERE project_id=%s", (pid,))
+            # read-back: הפרויקט לא אמור להופיע יותר כפעיל
+            res["neon_deleted"] = True
+            res["neon_verified_ok"] = load_project(pid) is None
+    except Exception as e:
+        logger.exception("Neon delete_project failed for %s: %s", pid, e)
+        res["error"] = str(e)
+    return res

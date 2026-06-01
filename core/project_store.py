@@ -180,22 +180,132 @@ REGISTRY_COLS = ["project_id", "project_name", "site_name", "client_name",
                  "status", "start_date", "end_date", "notes"]
 
 
-def load_projects_registry() -> pd.DataFrame:
-    """טוען את projects_registry.xlsx. מנרמל סטטוס + ממלא עמודות חסרות."""
+# ── Neon source-of-truth helpers (Part 7) ────────────────────
+def _neon_on() -> bool:
+    """האם Neon מוגדר (מקור האמת לפרויקטים). זול — לא פותח חיבור."""
+    try:
+        from core import cloud_db
+        return cloud_db.is_configured()
+    except Exception:
+        return False
+
+
+def _registry_signature(df: pd.DataFrame) -> list[dict]:
+    """חתימה מנורמלת של רגיסטרי להשוואה (כל הערכים כמחרוזת)."""
+    if df is None or df.empty:
+        return []
+    d = df.reindex(columns=REGISTRY_COLS).fillna("").astype(str)
+    return d.to_dict("records")
+
+
+def _load_local_registry() -> pd.DataFrame:
+    """טוען את projects_registry.xlsx המקומי. מנרמל סטטוס + עמודות חסרות."""
     if not PROJECTS_REGISTRY.exists():
-        logger.warning("projects_registry.xlsx not found at %s", PROJECTS_REGISTRY)
         return pd.DataFrame(columns=REGISTRY_COLS)
     try:
         df = pd.read_excel(PROJECTS_REGISTRY, engine="openpyxl")
         for c in REGISTRY_COLS:
             if c not in df.columns:
                 df[c] = ""
-        # נרמול סטטוס (closed→completed, on_hold→paused, וכו')
         df["status"] = df["status"].astype(str).apply(validate_project_status)
         return df[REGISTRY_COLS]
     except Exception as e:
-        logger.exception("Failed to load projects_registry: %s", e)
+        logger.exception("Failed to load local projects_registry: %s", e)
         return pd.DataFrame(columns=REGISTRY_COLS)
+
+
+def _mirror_registry_to_local(df: pd.DataFrame) -> None:
+    """כותב את רשימת הפרויקטים מ-Neon לקובץ המקומי — רק אם השתנה.
+
+    כתיבה רק על שינוי תוכן מונעת bumping מיותר של mtime (שמבטל את
+    קאש ה-Streamlit ויוצר רענונים מיותרים). best-effort — לא חוסם.
+    """
+    try:
+        if _registry_signature(_load_local_registry()) == _registry_signature(df):
+            return
+        _save_projects_registry(df.reindex(columns=REGISTRY_COLS))
+    except Exception as e:
+        logger.warning("Mirror registry to local failed (non-fatal): %s", e)
+
+
+def _seed_neon_from_local(local: pd.DataFrame) -> None:
+    """מהגר רגיסטרי מקומי קיים ל-Neon פעם אחת (כש-Neon ריק)."""
+    try:
+        from core import cloud_db
+        for _, r in local.iterrows():
+            row = {c: r.get(c, "") for c in REGISTRY_COLS}
+            cloud_db.save_project(row)
+        logger.info("Seeded %d local projects into Neon", len(local))
+    except Exception as e:
+        logger.warning("Seeding Neon from local failed (non-fatal): %s", e)
+
+
+def load_projects_registry() -> pd.DataFrame:
+    """טוען את רשימת הפרויקטים. כש-Neon מוגדר — Neon הוא מקור האמת.
+
+    סדר: (1) אם Neon לא מוגדר → קובץ מקומי בלבד (התנהגות מקורית).
+    (2) אם Neon מוגדר ויש בו פרויקטים → מחזיר אותם + מסנכרן לקובץ המקומי
+    (mirror). (3) אם Neon מוגדר וריק אך יש רגיסטרי מקומי → מהגר אותו
+    ל-Neon פעם אחת ואז מחזיר מ-Neon. כך פרויקטים שורדים reboot.
+    """
+    if not _neon_on():
+        return _load_local_registry()
+
+    try:
+        from core import cloud_db
+        ndf = cloud_db.load_projects()
+    except Exception as e:
+        logger.warning("Neon load_projects failed, using local: %s", e)
+        return _load_local_registry()
+
+    if ndf is None or ndf.empty:
+        local = _load_local_registry()
+        if local.empty:
+            return local
+        _seed_neon_from_local(local)
+        try:
+            ndf = cloud_db.load_projects()
+        except Exception:
+            ndf = None
+        if ndf is None or ndf.empty:
+            return local  # שמירה על המקומי אם המיגרציה נכשלה
+
+    for c in REGISTRY_COLS:
+        if c not in ndf.columns:
+            ndf[c] = ""
+    ndf["status"] = ndf["status"].astype(str).apply(validate_project_status)
+    ndf = ndf[REGISTRY_COLS]
+    _mirror_registry_to_local(ndf)
+    return ndf
+
+
+def _mirror_project_local(row: dict) -> None:
+    """mirror מקומי לפרויקט בודד (תיקיות + meta + registry) — best-effort."""
+    pid = str(row.get("project_id") or "").strip()
+    if not pid:
+        return
+    try:
+        ensure_project_folders(pid)
+        _write_project_meta(pid, row)
+    except Exception as e:
+        logger.warning("Local folders/meta mirror failed for %s: %s", pid, e)
+    try:
+        reg = _load_local_registry()
+        reg = reg[reg["project_id"].astype(str) != pid]
+        reg = pd.concat([reg, pd.DataFrame([{c: row.get(c, "") for c in REGISTRY_COLS}])],
+                        ignore_index=True)
+        _save_projects_registry(reg[REGISTRY_COLS])
+    except Exception as e:
+        logger.warning("Local registry mirror failed for %s: %s", pid, e)
+
+
+def _audit_project_event(event: str, payload: dict) -> None:
+    """רישום אירוע פרויקט ללוג הביקורת (SQLite) — best-effort, לא חוסם."""
+    try:
+        from core import db
+        db.log_event(event, payload)
+    except Exception:
+        pass
 
 
 def _save_projects_registry(df: pd.DataFrame) -> None:
@@ -295,6 +405,24 @@ def verify_project_persisted(project_id: str, expected: dict | None = None) -> d
     if not pid:
         return result
 
+    # כש-Neon מקור האמת: האימות הקובע הוא מול Neon (read-back מהמקור).
+    # קבצים מקומיים (folder/meta) הם mirror בלבד — לא נדרשים ל-ok, כי
+    # על Streamlit Cloud הם עלולים להיעלם ב-restart.
+    if _neon_on():
+        try:
+            from core import cloud_db
+            nres = cloud_db.verify_project(pid, expected)
+            result["in_registry"] = nres.get("in_neon", False)
+            result["in_neon"] = nres.get("in_neon", False)
+            result["folder_exists"] = (PROJECTS_DIR / pid).exists()
+            result["meta_exists"] = _meta_path(pid).exists()
+            result["mismatches"] = nres.get("mismatches", [])
+            result["ok"] = nres.get("ok", False)
+            result["backend"] = "neon"
+            return result
+        except Exception as e:
+            logger.warning("Neon verify_project failed, using local: %s", e)
+
     registry = load_projects_registry()
     rows = registry[registry["project_id"].astype(str) == pid] \
         if not registry.empty else registry
@@ -392,6 +520,25 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
         "notes": (project_data.get("notes") or "").strip(),
     }
 
+    # ── מסלול Neon (מקור אמת): כתיבה ל-Neon + read-back ──
+    if _neon_on():
+        from core import cloud_db
+        sres = cloud_db.save_project(new_row)
+        if not sres.get("neon_verified_ok"):
+            err = sres.get("error") or (
+                f"שדות לא תואמים ב-read-back: {sres.get('mismatches')}")
+            logger.error("create_project Neon read-back failed for %s: %s", pid, sres)
+            return False, (f"הפרויקט לא נשמר ב-Neon (לא אומת) — {err}"), ""
+        # mirror מקומי (תיקיות נדרשות ליבוא קבצים) — best-effort, לא חוסם
+        _mirror_project_local(new_row)
+        logger.info("Created project in Neon (verified): %s (%s)", pid, pname)
+        _audit_project_event("project_created", {
+            "project_id": pid, "project_name": pname,
+            "client": new_row.get("client_name", ""), "status": status,
+            "backend": "neon"})
+        return True, f"פרויקט '{pname}' נוצר ונשמר ב-Neon", pid
+
+    # ── מסלול מקומי בלבד (Neon לא מוגדר) ──
     # Append + save xlsx
     new_df = pd.concat([registry, pd.DataFrame([new_row])], ignore_index=True)
     try:
@@ -422,15 +569,9 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
                        f"שדות לא תואמים={check['mismatches']}"), pid
 
     logger.info("Created project (verified): %s (%s)", pid, pname)
-    try:
-        from core import db
-        db.log_event("project_created", {
-            "project_id": pid, "project_name": pname,
-            "client": new_row.get("client_name", ""),
-            "status": status,
-        })
-    except Exception:
-        pass
+    _audit_project_event("project_created", {
+        "project_id": pid, "project_name": pname,
+        "client": new_row.get("client_name", ""), "status": status})
     return True, f"פרויקט '{pname}' נוצר בהצלחה", pid
 
 
@@ -474,6 +615,33 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
         else:
             normalized[k] = v
 
+    # ── מסלול Neon (מקור אמת): מיזוג על השורה הקיימת + UPSERT + read-back ──
+    if _neon_on():
+        from core import cloud_db
+        existing = cloud_db.load_project(pid) or {}
+        # בסיס מהרגיסטרי (כבר Neon-backed) אם load_project לא החזיר
+        if not existing:
+            base = registry[registry["project_id"].astype(str) == pid].iloc[0].to_dict()
+            existing = {c: ("" if base.get(c) is None else str(base.get(c)))
+                        for c in REGISTRY_COLS}
+        merged = {c: existing.get(c, "") for c in REGISTRY_COLS}
+        merged["project_id"] = pid
+        merged.update(normalized)
+        sres = cloud_db.save_project(merged)
+        if not sres.get("neon_verified_ok"):
+            err = sres.get("error") or (
+                f"שדות לא תואמים ב-read-back: {sres.get('mismatches')}")
+            logger.error("update_project Neon read-back failed for %s: %s", pid, sres)
+            return False, f"העדכון לא נשמר ב-Neon (לא אומת) — {err}"
+        _mirror_project_local(merged)
+        logger.info("Updated project in Neon (verified) %s: %s",
+                    pid, list(normalized.keys()))
+        _audit_project_event("project_updated", {
+            "project_id": pid, "fields_changed": list(normalized.keys()),
+            "backend": "neon"})
+        return True, "הפרויקט עודכן ונשמר ב-Neon"
+
+    # ── מסלול מקומי בלבד (Neon לא מוגדר) ──
     # החלת השינויים על שורת הרגיסטרי.
     # pandas 2.x קפדני על dtypes: עמודה שנטענה כ-float64 (כי כל הערכים NaN)
     # תזרוק TypeError אם ננסה לכתוב מחרוזת. ננרמל הכל לאובייקט קודם.
@@ -509,15 +677,8 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
                        f"שדות שלא נשמרו: {check['mismatches'] or 'לא ידוע'}")
 
     logger.info("Updated project (verified) %s: %s", pid, list(normalized.keys()))
-    # audit
-    try:
-        from core import db
-        db.log_event("project_updated", {
-            "project_id": pid,
-            "fields_changed": list(normalized.keys()),
-        })
-    except Exception:
-        pass
+    _audit_project_event("project_updated", {
+        "project_id": pid, "fields_changed": list(normalized.keys())})
     return True, "הפרויקט עודכן בהצלחה"
 
 
@@ -529,6 +690,25 @@ def update_project_meta(project_id: str, updates: dict) -> tuple[bool, str]:
 
 # ── Delete project ──────────────────────────────────────────
 TRASH_DIR = DATA_ROOT / ".trash"
+
+
+def _move_folder_to_trash(project_id: str) -> str | None:
+    """מעביר את תיקיית הפרויקט לסל מיחזור (הפיך). best-effort — None בכשל."""
+    import shutil
+    pid = (project_id or "").strip()
+    pdir = PROJECTS_DIR / pid
+    if not pid or not pdir.exists():
+        return None
+    try:
+        TRASH_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = TRASH_DIR / f"{pid}_{ts}"
+        shutil.move(str(pdir), str(dest))
+        logger.info("Moved project folder to trash: %s", dest)
+        return str(dest)
+    except Exception as e:
+        logger.warning("Failed to move folder to trash for %s: %s", pid, e)
+        return None
 
 
 def delete_project(project_id: str,
@@ -557,6 +737,33 @@ def delete_project(project_id: str,
     if registry.empty or pid not in registry["project_id"].astype(str).values:
         return False, f"פרויקט '{pid}' לא נמצא ברגיסטרי", None
 
+    # ── מסלול Neon (מקור אמת): soft-delete + אימות שהפרויקט הוסר ──
+    # soft-delete הפיך (is_deleted=TRUE) — לא מוחקים נתונים לצמיתות.
+    if _neon_on():
+        from core import cloud_db
+        dres = cloud_db.delete_project(pid, hard=False)
+        if not dres.get("neon_verified_ok"):
+            err = dres.get("error") or "הפרויקט עדיין מופיע כפעיל ב-Neon"
+            logger.error("delete_project Neon failed for %s: %s", pid, dres)
+            return False, f"המחיקה לא אומתה מול Neon — {err}", None
+        # mirror מקומי: הסרה מהרגיסטרי + העברת תיקייה לסל מיחזור (best-effort)
+        try:
+            new_registry = _load_local_registry()
+            new_registry = new_registry[new_registry["project_id"].astype(str) != pid]
+            _save_projects_registry(new_registry[REGISTRY_COLS])
+        except Exception as e:
+            logger.warning("Local registry mirror on delete failed: %s", e)
+        trash_path = _move_folder_to_trash(pid) if delete_folder else None
+        logger.info("Deleted project %s in Neon (soft) (trash=%s)", pid, trash_path)
+        _audit_project_event("project_deleted", {
+            "project_id": pid, "delete_folder": delete_folder,
+            "trash_path": trash_path, "backend": "neon"})
+        msg = f"הפרויקט '{pid}' נמחק (Neon)"
+        if trash_path:
+            msg += f". התיקייה הועברה ל-{trash_path}"
+        return True, msg, trash_path
+
+    # ── מסלול מקומי בלבד (Neon לא מוגדר) ──
     # שלב 1: הסרה מהרגיסטרי
     new_registry = registry[registry["project_id"].astype(str) != pid].copy()
     try:
