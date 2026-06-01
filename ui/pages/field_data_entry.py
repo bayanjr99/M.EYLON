@@ -10,7 +10,7 @@ from datetime import date as date_cls
 import pandas as pd
 import streamlit as st
 
-from core import control_db
+from core import cloud_db, control_db
 from ui.components import ins, sec
 from ui.formatters import display_dataframe
 
@@ -119,6 +119,16 @@ def render_field_data_entry(project_meta: dict) -> None:
     ins("blue", "✍️", "הזנה ישירה למערכת",
         "במקום לעדכן אקסלים, ערוך כאן את הנתונים. כל שינוי נשמר ל-SQLite "
         "ומופיע מיידית בטאבי הפרויקט (עובדים, ספקים, סולר, וכו').")
+
+    # מגן ייצוב: מסכי נתוני-השטח נשמרים ל-SQLite מקומי (project_control.sqlite)
+    # שאינו מסונכרן ל-Neon. על Streamlit Cloud מערכת-הקבצים זמנית ולכן הזנות
+    # אלו *יאבדו* ב-reboot/redeploy. מציגים אזהרה רק כשרצים בענן (Neon מוגדר).
+    if cloud_db.is_configured():
+        ins("amber", "⚠️", "שימו לב: מסך זה עדיין לא מותמד בענן",
+            "נתוני השטח נשמרים מקומית (SQLite) ולא ל-Neon. בהרצה בענן הם "
+            "עלולים להימחק ב-reboot/redeploy. עד שתושלם ההתמדה — אל תסתמכו "
+            "על מסך זה לשמירה ארוכת-טווח. סולר/שעות (דרך 'הזנה ידנית') כן "
+            "נשמרים בקביעות.")
 
     # ── פילטרים גלובליים לכל התתי-טאבים ──
     sec("פילטרים")

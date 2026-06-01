@@ -403,8 +403,15 @@ def _do_save(kind: str, project_id: str, project_name: str,
             if neon_on:
                 store_ok = store_ok and bool(applied.get("neon_verified_ok"))
 
-            # בנייה מחדש של master + ניקוי קאש כדי שהדשבורד יתעדכן
-            build_master()
+            # עדכון נתונים אחרי שמירה כדי שהדשבורד יתרענן:
+            # • מצב מקומי (אין Neon): build_master אופה את ההזנה הידנית
+            #   ל-master.parquet מהקבצים המקומיים (שקיימים בדיסק).
+            # • מצב ענן (Neon פעיל): ההזנה כבר נשמרה ב-Neon ונטענת *חי* דרך
+            #   load_master_merged. אסור להריץ build_master כאן — בענן
+            #   data/projects/ ריקה (gitignored), ובנייה מחדש תדרוס את
+            #   master.parquet ותמחק את נתוני החשבשבת המחויבים. די לנקות קאש.
+            if not neon_on:
+                build_master()
             st.cache_data.clear()
 
             # אימות אמיתי: Neon אם מוגדר (קריאה חוזרת מהענן), אחרת master.parquet

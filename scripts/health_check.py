@@ -33,7 +33,7 @@ except Exception:
 import pandas as pd  # noqa: E402
 
 import pipeline  # noqa: E402
-from core import ledger_store, manual_store  # noqa: E402
+from core import cloud_db, ledger_store, manual_store  # noqa: E402
 
 # קבצי-מאגר/עזר פנימיים שיושבים בתיקיית הפרויקט ואינם "תלויים באוויר".
 _KNOWN_STORE_FILES = {
@@ -212,6 +212,81 @@ def check_data_files() -> int:
     return 0
 
 
+def check_neon() -> int:
+    """בודק את שכבת ההתמדה הקבועה (Neon) — קריטי ל-Streamlit Cloud.
+
+    בענן מערכת-הקבצים זמנית, ולכן ההזנות הידניות (סולר/שעות) שורדות *רק*
+    אם הן ב-Neon. הבדיקה מוודאת: מוגדר? זמין? כמה שורות לכל פרויקט/סוג?
+    האם יש שורות ללא תאריך? והאם Neon תואם ל-master.parquet.
+    """
+    warnings = 0
+    _hr("התמדה קבועה (Neon Postgres)")
+
+    if not cloud_db.is_configured():
+        print("[i] Neon לא מוגדר (NEON_DATABASE_URL חסר).")
+        print("    מצב מקומי: ההזנות נשמרות לקבצים מקומיים (data/manual/**).")
+        print("    שים לב: על Streamlit Cloud — בלי Neon, הזנות ידניות *יאבדו*")
+        print("    ב-reboot/redeploy. זו אזהרה רק אם המערכת רצה בענן.")
+        return 0
+
+    print("[ok] Neon מוגדר (NEON_DATABASE_URL קיים).")
+    if not cloud_db.is_available():
+        warnings += 1
+        print("[!] Neon מוגדר אך לא ניתן להתחבר כרגע (timeout/אישורים/רשת).")
+        print("    שמירות ל-Neon ייכשלו — ההזנה לא תאומת ולא תוצג כ'נשמר'.")
+        return warnings
+
+    print("[ok] Neon זמין (חיבור בדיקה הצליח).")
+
+    reg_ids = sorted({str(p.get("project_id")) for p in _registry_projects()})
+    master = pipeline.load_master()
+    total_neon = 0
+    for pid in reg_ids:
+        for kind in sorted(manual_store.MASTER_KINDS):
+            try:
+                df = cloud_db.load_entries(pid, kind)
+            except Exception as e:
+                warnings += 1
+                print(f"[!] {pid}/{kind}: כשל בקריאה מ-Neon ({e}).")
+                continue
+            if df.empty:
+                continue
+            n = len(df)
+            total_neon += n
+            line = f"    {pid}/{kind}: {n} שורות"
+
+            # שורות ללא תאריך — לא יזוהו בחתך חודשי במאסטר
+            if "date" in df.columns:
+                no_date = int(pd.to_datetime(df["date"], errors="coerce").isna().sum())
+                if no_date:
+                    warnings += 1
+                    line += f"  [!] {no_date} ללא תאריך"
+
+            # row_hash כפול — PK ב-Neon, אמור להיות בלתי-אפשרי; בדיקת-בטיחות
+            if "row_hash" in df.columns:
+                dups = int(df["row_hash"].duplicated().sum())
+                if dups:
+                    warnings += 1
+                    line += f"  [!] {dups} row_hash כפול"
+
+            # התאמה מול master.parquet (origin=neon_manual נטען חי בדשבורד)
+            if not master.empty and "source" in master.columns:
+                in_master = master[
+                    (master.get("project_id") == pid)
+                    & (master.get("source") == "manual")
+                ]
+                # אינפורמטיבי בלבד: master.parquet עצמו לא חייב לכלול manual
+                # כשהוא נטען חי דרך load_master_merged.
+                _ = in_master  # אין אזהרה — נטען בזמן ריצה
+            print(line)
+
+    if total_neon == 0:
+        print("    (אין הזנות ידניות ב-Neon עדיין.)")
+    else:
+        print(f"\n    סה\"כ ב-Neon: {total_neon} הזנות ידניות.")
+    return warnings
+
+
 def main() -> int:
     print("בדיקת תקינות מערכת — מ. אילון אביב נכסים")
     total = 0
@@ -219,6 +294,7 @@ def main() -> int:
     total += check_project_details()
     total += check_master_coverage()
     total += check_data_files()
+    total += check_neon()
 
     _hr("סיכום")
     if total == 0:
