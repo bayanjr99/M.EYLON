@@ -144,20 +144,6 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
                                    key=f"{base}_month", format="DD/MM/YYYY")
         target_month = month_date.strftime("%m-%Y")
 
-    existing = manual_store.load_store(project_id, kind)
-    ec1, ec2 = st.columns([3, 1])
-    with ec1:
-        st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר בקובץ קבוע "
-                   "(data/manual/) שמסונכרן ב-git · כל שורה משויכת לחודש לפי "
-                   "התאריך שבה — אין צורך למלא חודש בכל שורה.")
-    with ec2:
-        if not existing.empty:
-            st.download_button(
-                "⬇️ גיבוי המאגר (אקסל)", data=_to_excel_bytes(kind, existing),
-                file_name=f"{kind}_{project_id}_backup.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"{base}_backup", use_container_width=True)
-
     # ── מצב אחסון קבוע (Neon) ──
     neon_on = False
     try:
@@ -165,6 +151,26 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
         neon_on = cloud_db.is_configured()
     except Exception:
         neon_on = False
+
+    existing = manual_store.load_store(project_id, kind)
+    ec1, ec2 = st.columns([3, 1])
+    with ec1:
+        if neon_on:
+            st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר במסד נתונים "
+                       "קבוע (Neon) ושורד redeploy/restart · גיבוי מקומי "
+                       "(parquet + xlsx) נשמר במקביל · כל שורה משויכת לחודש לפי "
+                       "התאריך שבה — אין צורך למלא חודש בכל שורה.")
+        else:
+            st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר בקובץ קבוע "
+                       "(data/manual/) שמסונכרן ב-git · כל שורה משויכת לחודש לפי "
+                       "התאריך שבה — אין צורך למלא חודש בכל שורה.")
+    with ec2:
+        if not existing.empty:
+            st.download_button(
+                "⬇️ גיבוי המאגר (אקסל)", data=_to_excel_bytes(kind, existing),
+                file_name=f"{kind}_{project_id}_backup.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{base}_backup", use_container_width=True)
 
     if neon_on:
         ins("green", "☁️", "שמירה קבועה לענן פעילה (Neon)",
