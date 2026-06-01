@@ -494,7 +494,10 @@ def _coerce_types(kind: str, df: pd.DataFrame) -> pd.DataFrame:
             df[key] = _to_date_series(df[key])
         elif ckind == "int":
             df[key] = df[key].apply(_to_float)
-            df[key] = pd.to_numeric(df[key], errors="coerce").astype("Int64")
+            # עיגול לפני ההמרה: float עם שבר (למשל 12.5) לא ניתן לקאסט
+            # ישיר ל-Int64 (pandas זורק TypeError). מעגלים למספר השלם הקרוב.
+            s = pd.to_numeric(df[key], errors="coerce").round()
+            df[key] = s.astype("Int64")
         elif ckind == "float":
             df[key] = df[key].apply(_to_float)
             df[key] = pd.to_numeric(df[key], errors="coerce")
