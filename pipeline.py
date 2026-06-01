@@ -666,14 +666,18 @@ def aggregate_store_chashbashevet(project_id: str, project_name: str) -> pd.Data
     return rows[MASTER_SCHEMA_COLS].reset_index(drop=True)
 
 
-def aggregate_manual_solar(project_id: str, project_name: str) -> pd.DataFrame:
+def aggregate_manual_solar(project_id: str, project_name: str,
+                           store: pd.DataFrame | None = None) -> pd.DataFrame:
     """ממיר את מאגר הסולר הידני (manual_store) לשורות בסכמת master.
 
     כל שורה: source="solar", amount=0.0 (העלות מגיעה מהכרטסת —
     לא לכפול), עם liters/license_num/tool_name בעמודות הייעודיות.
     החודש נגזר מתאריך השורה.
+
+    store: אם סופק (למשל מ-Neon) — משמש במקום load_store המקומי.
     """
-    store = manual_store.load_store(project_id, "solar")
+    if store is None:
+        store = manual_store.load_store(project_id, "solar")
     if store.empty or "date" not in store.columns:
         return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
 
@@ -709,13 +713,17 @@ def aggregate_manual_solar(project_id: str, project_name: str) -> pd.DataFrame:
     return rows[MASTER_SCHEMA_COLS].reset_index(drop=True)
 
 
-def aggregate_manual_hours(project_id: str, project_name: str) -> pd.DataFrame:
+def aggregate_manual_hours(project_id: str, project_name: str,
+                           store: pd.DataFrame | None = None) -> pd.DataFrame:
     """ממיר את מאגר השעות הידני (manual_store) לשורות בסכמת master.
 
     כל שורה: source="hours", amount=0.0, work_hours=total_hours,
     tool_name=שם העובד (כדי שיופיע בטאב שעות). החודש נגזר מתאריך השורה.
+
+    store: אם סופק (למשל מ-Neon) — משמש במקום load_store המקומי.
     """
-    store = manual_store.load_store(project_id, "hours")
+    if store is None:
+        store = manual_store.load_store(project_id, "hours")
     if store.empty or "date" not in store.columns:
         return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
 
@@ -769,15 +777,29 @@ def build_master() -> pd.DataFrame:
     tools = _load_tools_registry()
     all_rows: list[pd.DataFrame] = []
 
+    # כש-Neon מוגדר, ההזנות הידניות נקראות *חי* מ-Neon ע"י load_master_merged
+    # ולכן אסור לאפות אותן ל-master.parquet — אחרת ייספרו פעמיים.
+    neon_on = False
+    try:
+        from core import cloud_db
+        neon_on = cloud_db.is_configured()
+    except Exception:
+        neon_on = False
+
     projects = list_available_projects()
     for proj in projects:
         project_id = proj["project_id"]
         project_name = proj.get("project_name", project_id)
         has_store = ledger_store.has_store(project_id)
 
-        # הזנה ידנית (סולר/שעות) — נטענת פעם אחת לכל הפרויקט, מתפלגת לחודשים
-        manual_solar = aggregate_manual_solar(project_id, project_name)
-        manual_hours = aggregate_manual_hours(project_id, project_name)
+        # הזנה ידנית (סולר/שעות) — נטענת פעם אחת לכל הפרויקט, מתפלגת לחודשים.
+        # כש-Neon פעיל מדלגים על אפייה (הנתונים יתווספו חי מ-Neon).
+        if neon_on:
+            manual_solar = pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+            manual_hours = pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+        else:
+            manual_solar = aggregate_manual_solar(project_id, project_name)
+            manual_hours = aggregate_manual_hours(project_id, project_name)
         manual_all = pd.concat(
             [f for f in (manual_solar, manual_hours) if not f.empty],
             ignore_index=True, sort=False,
@@ -914,6 +936,84 @@ def load_master() -> pd.DataFrame:
         except Exception as e:
             logger.exception("Failed to load master parquet: %s", e)
     return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+
+
+def load_manual_neon_rows(project_id: str, project_name: str) -> pd.DataFrame:
+    """טוען הזנות ידניות (סולר+שעות) מ-Neon וממיר לסכמת master.
+
+    משמש את load_master_merged כדי להציג נתונים ידניים חיים מהענן
+    מבלי לאפות אותם ל-master.parquet (מניעת כפילות).
+    """
+    from core import cloud_db
+    frames: list[pd.DataFrame] = []
+    try:
+        solar_store = cloud_db.load_entries(project_id, "solar")
+        s = aggregate_manual_solar(project_id, project_name, store=solar_store)
+        if not s.empty:
+            frames.append(s)
+    except Exception as e:
+        logger.warning("Neon solar load failed for %s: %s", project_id, e)
+    try:
+        hours_store = cloud_db.load_entries(project_id, "hours")
+        h = aggregate_manual_hours(project_id, project_name, store=hours_store)
+        if not h.empty:
+            frames.append(h)
+    except Exception as e:
+        logger.warning("Neon hours load failed for %s: %s", project_id, e)
+    if not frames:
+        return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def load_master_merged() -> pd.DataFrame:
+    """master.parquet + הזנות ידניות חיות מ-Neon (אם מוגדר).
+
+    כש-Neon לא מוגדר — מחזיר את master.parquet כמות שהוא (ההזנות הידניות
+    כבר אפויות בו ע"י build_master). כש-Neon מוגדר — build_master דילג על
+    אפיית ההזנות, והן מתווספות כאן עם סימון ``origin='neon_manual'`` כדי
+    שלא ייספרו פעמיים.
+    """
+    m = load_master()
+    try:
+        from core import cloud_db
+        if not cloud_db.is_configured():
+            return m
+    except Exception:
+        return m
+
+    neon_frames: list[pd.DataFrame] = []
+    try:
+        for proj in list_available_projects():
+            pid = proj["project_id"]
+            pname = proj.get("project_name", pid)
+            rows = load_manual_neon_rows(pid, pname)
+            if not rows.empty:
+                neon_frames.append(rows)
+    except Exception as e:
+        logger.warning("load_master_merged: Neon merge failed: %s", e)
+        return m
+
+    if not neon_frames:
+        return m
+    nm = pd.concat(neon_frames, ignore_index=True, sort=False)
+    nm["origin"] = "neon_manual"  # סימון ברור — נתון ידני מהענן
+    return pd.concat([m, nm], ignore_index=True, sort=False)
+
+
+def verify_manual_persisted(project_id: str, kind: str,
+                            months: list[str]) -> dict:
+    """אימות שההזנות הידניות נשמרו לצמיתות — Neon אם מוגדר, אחרת master.parquet.
+
+    מחזיר את אותו מבנה כמו verify_manual_in_master:
+    {"rows_in_master": int, "months_found": [...], "ok": bool}.
+    """
+    try:
+        from core import cloud_db
+        if cloud_db.is_configured():
+            return cloud_db.verify(project_id, kind, months)
+    except Exception as e:
+        logger.warning("Neon verify failed, fallback to master.parquet: %s", e)
+    return verify_manual_in_master(project_id, kind, months)
 
 
 def verify_manual_in_master(project_id: str, kind: str,
