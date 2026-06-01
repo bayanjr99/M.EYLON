@@ -2089,8 +2089,11 @@ def _tab_qa(df: pd.DataFrame, project_meta: dict) -> None:
     # ── 14. ספקים עם סכומים חריגים ──
     sec("ספקים עם סכומים חריגים", meta="חריגות סטטיסטיות")
     if not expenses.empty:
-        sup_sums = expenses[expenses["supplier"].fillna("") != ""].groupby(
-            "supplier")["net_amount"].sum()
+        # הגנת dtype: net_amount עלול להגיע כ-object (מיזוג מקורות שונים) —
+        # נכפה ל-float לפני סטטיסטיקה כדי ש-.round() לא יקרוס.
+        _exp_sup = expenses[expenses["supplier"].fillna("") != ""].copy()
+        _exp_sup["net_amount"] = pd.to_numeric(_exp_sup["net_amount"], errors="coerce")
+        sup_sums = _exp_sup.groupby("supplier")["net_amount"].sum()
         if len(sup_sums) >= 3:
             med = sup_sums.median()
             std = sup_sums.std()
