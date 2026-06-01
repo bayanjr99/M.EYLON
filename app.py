@@ -66,8 +66,12 @@ def _file_mtime(path: str) -> float:
 
 @st.cache_data(show_spinner=False)
 def _load_master(_mtime: float) -> pd.DataFrame:
-    """טוען master.parquet. הקאש מתאפס אוטומטית כשהקובץ משתנה."""
-    return pipeline.load_master()
+    """טוען master.parquet + הזנות ידניות חיות מ-Neon (אם מוגדר).
+
+    הקאש מתאפס כשהקובץ משתנה; אחרי שמירה ידנית מתבצע cache_data.clear()
+    כך שהזנות חדשות מ-Neon נטענות מיד.
+    """
+    return pipeline.load_master_merged()
 
 
 @st.cache_data(show_spinner=False)

@@ -849,4 +849,29 @@ def apply_import(project_id: str, kind: str, incoming: pd.DataFrame,
     summary["saved"] = True
     summary["saved_months"] = sorted(valid["month"].dropna().unique().tolist())
     summary["saved_count"] = int(len(valid))
+
+    # ── כתיבה-מקבילה ל-Neon (אחסון קבוע בענן) ──
+    # הקובץ המקומי הוא גיבוי; ב-Neon הנתונים שורדים redeploy. write-through
+    # זה לא חוסם את השמירה המקומית — אם Neon לא זמין, ממשיכים מקומית בלבד.
+    summary["neon_saved"] = False
+    summary["neon_verified_ok"] = False
+    summary["neon_verified_rows"] = 0
+    summary["batch_id"] = None
+    try:
+        from core import cloud_db
+        if cloud_db.is_configured():
+            neon = cloud_db.save_entries(
+                project_id, kind, valid, mode=mode,
+                target_month=target_month,
+                source_file=source_file or "הזנה ידנית")
+            summary["neon_saved"] = bool(neon.get("neon_saved"))
+            summary["neon_verified_ok"] = bool(neon.get("neon_verified_ok"))
+            summary["neon_verified_rows"] = int(neon.get("neon_verified_rows", 0))
+            summary["neon_store_after"] = int(neon.get("neon_store_after", 0))
+            summary["batch_id"] = neon.get("batch_id")
+            if neon.get("error"):
+                summary["neon_error"] = neon["error"]
+    except Exception as e:  # write-through לא חוסם שמירה מקומית
+        logger.warning("Neon write-through failed (non-fatal): %s", e)
+        summary["neon_error"] = str(e)
     return summary

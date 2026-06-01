@@ -144,12 +144,26 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
                                    key=f"{base}_month", format="DD/MM/YYYY")
         target_month = month_date.strftime("%m-%Y")
 
+    # ── מצב אחסון קבוע (Neon) ──
+    neon_on = False
+    try:
+        from core import cloud_db
+        neon_on = cloud_db.is_configured()
+    except Exception:
+        neon_on = False
+
     existing = manual_store.load_store(project_id, kind)
     ec1, ec2 = st.columns([3, 1])
     with ec1:
-        st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר בקובץ קבוע "
-                   "(data/manual/) שמסונכרן ב-git · כל שורה משויכת לחודש לפי "
-                   "התאריך שבה — אין צורך למלא חודש בכל שורה.")
+        if neon_on:
+            st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר במסד נתונים "
+                       "קבוע (Neon) ושורד redeploy/restart · גיבוי מקומי "
+                       "(parquet + xlsx) נשמר במקביל · כל שורה משויכת לחודש לפי "
+                       "התאריך שבה — אין צורך למלא חודש בכל שורה.")
+        else:
+            st.caption(f"במאגר כעת: {len(existing):,} שורות · נשמר בקובץ קבוע "
+                       "(data/manual/) שמסונכרן ב-git · כל שורה משויכת לחודש לפי "
+                       "התאריך שבה — אין צורך למלא חודש בכל שורה.")
     with ec2:
         if not existing.empty:
             st.download_button(
@@ -158,13 +172,17 @@ def _render_kind(kind: str, projects: list[dict]) -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"{base}_backup", use_container_width=True)
 
-    # ── אזהרת ענן: מערכת קבצים זמנית ──
-    if _is_cloud():
-        ins("amber", "☁️", "אתה מריץ על Streamlit Cloud — שמירה זמנית!",
-            "קבצים שנכתבים בענן עלולים להימחק ב-restart/redeploy. כדי לשמור "
-            "את הנתונים לצמיתות: הורד את הגיבוי (כפתור למעלה) והעלה אותו "
-            "מקומית, או הזן מקומית ובצע push. (אפשר לעבור לאחסון ענן קבוע "
-            "כמו Supabase/Sheets בכל עת.)")
+    if neon_on:
+        ins("green", "☁️", "שמירה קבועה לענן פעילה (Neon)",
+            "הנתונים שתזין יישמרו במסד נתונים קבוע (Neon Postgres) וישרדו "
+            "redeploy/restart. במקביל נשמר גם גיבוי מקומי (parquet + xlsx). "
+            "המערכת תציג 'נשמר' רק לאחר אימות שהשורות אכן נכתבו ל-Neon.")
+    elif _is_cloud():
+        ins("amber", "☁️", "אתה מריץ על Streamlit Cloud — שמירה קבועה אינה פעילה!",
+            "מסד הנתונים הקבוע (Neon) אינו מוגדר — קבצים שנכתבים בענן עלולים "
+            "להימחק ב-restart/redeploy. כדי להפעיל שמירה קבועה: הגדר את הסוד "
+            "NEON_DATABASE_URL ב-Settings → Secrets. בינתיים: הורד את הגיבוי "
+            "(כפתור למעלה) והעלה מקומית, או הזן מקומית ובצע push.")
 
     # ── תוצאת השמירה האחרונה (שורדת rerun; מוצגת בכל שלב) ──
     res = st.session_state.get(f"{base}_save_result")
@@ -361,8 +379,14 @@ def _do_save(kind: str, project_id: str, project_name: str,
     מציג 'נשמר' רק אם האימות עבר: השורות נקראו חזרה מהמאגר *וגם*
     מופיעות ב-master.parquet בחודשים הנכונים.
     """
-    from core import db
-    from pipeline import verify_manual_in_master
+    from core import cloud_db, db
+    from pipeline import verify_manual_persisted
+
+    neon_on = False
+    try:
+        neon_on = cloud_db.is_configured()
+    except Exception:
+        neon_on = False
 
     kind_label = manual_store.KINDS[kind]["label"]
     result: dict = {"ok": False, "kind_label": kind_label,
@@ -373,14 +397,18 @@ def _do_save(kind: str, project_id: str, project_name: str,
                 project_id, kind, edited, mode_key,
                 source_file="הזנה ידנית", target_month=target_month)
             saved_months = applied.get("saved_months", [])
+            # שמירה מקומית אומתה (קריאה חוזרת מ-parquet)
             store_ok = bool(applied.get("saved")) and bool(applied.get("verified_ok"))
+            # כש-Neon פעיל — חובה שגם הקריאה החוזרת מ-Neon תעבור
+            if neon_on:
+                store_ok = store_ok and bool(applied.get("neon_verified_ok"))
 
             # בנייה מחדש של master + ניקוי קאש כדי שהדשבורד יתעדכן
             build_master()
             st.cache_data.clear()
 
-            # אימות אמיתי: האם השורות הגיעו ל-master.parquet בדיסק
-            master_chk = verify_manual_in_master(project_id, kind, saved_months)
+            # אימות אמיתי: Neon אם מוגדר (קריאה חוזרת מהענן), אחרת master.parquet
+            master_chk = verify_manual_persisted(project_id, kind, saved_months)
 
             ok = store_ok and master_chk["ok"]
             result.update({
@@ -395,6 +423,11 @@ def _do_save(kind: str, project_id: str, project_name: str,
                 "months": saved_months,
                 "rows_in_master": master_chk["rows_in_master"],
                 "months_found": master_chk["months_found"],
+                "backend": master_chk.get("backend", "master.parquet"),
+                "neon_on": neon_on,
+                "neon_verified_rows": applied.get("neon_verified_rows", 0),
+                "batch_id": applied.get("batch_id"),
+                "neon_error": applied.get("neon_error"),
             })
             status = "approved" if ok else "failed"
             # לוג כפול: SQLite (קיים) + xlsx קריא (data/manual/import_log.xlsx)
@@ -425,14 +458,20 @@ def _render_save_result(kind: str, res: dict) -> None:
     kind_label = res.get("kind_label", kind)
     if not res.get("ok"):
         err = res.get("error")
+        neon_err = res.get("neon_error")
         if err:
             ins("red", "⛔", "השמירה נכשלה — הנתונים לא נשמרו",
                 f"שגיאה: {err}. גובה גיבוי של המאגר הקודם (קובץ .bak). "
                 "נסה שוב או בדוק את הקובץ.")
+        elif neon_err:
+            ins("red", "⛔", "השמירה לענן (Neon) נכשלה — אל תסמוך על שמירה זו",
+                f"הנתונים אולי נשמרו מקומית אך לא אומתו בענן. שגיאה: {neon_err}. "
+                "נסה שוב, או בדוק את חיבור ה-Neon (NEON_DATABASE_URL).")
         else:
+            backend = res.get("backend", "master")
             ins("red", "⛔", "השמירה לא אומתה — ייתכן שהנתונים לא נשמרו",
                 f"נכתבו {res.get('verified_rows', 0):,} שורות במאגר אך "
-                f"נמצאו {res.get('rows_in_master', 0):,} שורות ב-master "
+                f"נמצאו {res.get('rows_in_master', 0):,} שורות ב-{backend} "
                 "לחודשים שנשמרו. אל תסמוך על שמירה זו — נסה שוב.")
         return
     months = ", ".join(res.get("months", [])) or "—"
@@ -445,12 +484,22 @@ def _render_save_result(kind: str, res: dict) -> None:
         f"כפילויות שדולגו: {res.get('duplicate_count', 0):,} · "
         f"עודכנו: {res.get('updated_count', 0):,} · "
         f'סה"כ בקובץ אחרי שמירה: {res.get("store_after", 0):,} שורות.')
-    ins("blue", "🔎", "אימות מלא עבר בהצלחה",
-        f"מאגר: {res.get('verified_rows', 0):,} שורות נקראו חזרה מהדיסק · "
-        f"master: {res.get('rows_in_master', 0):,} שורות ל-{kind_label} "
-        f"בחודשים {', '.join(res.get('months_found', [])) or '—'} · "
-        "הדשבורד עודכן — הנתונים יופיעו בכל הטאבים והגרפים.")
-    st.caption(f"מיקום הקובץ הקבוע: {res.get('store_path', '')}")
+    backend = res.get("backend", "master.parquet")
+    if res.get("neon_on"):
+        ins("blue", "☁️", "אימות מלא עבר — נשמר לצמיתות בענן (Neon)",
+            f"מקומי (גיבוי): {res.get('verified_rows', 0):,} שורות נקראו חזרה · "
+            f"Neon: {res.get('neon_verified_rows', 0):,} שורות אומתו · "
+            f"בחודשים {', '.join(res.get('months_found', [])) or '—'} · "
+            "הנתונים ישרדו redeploy/restart ויופיעו בכל הטאבים והגרפים.")
+        if res.get("batch_id"):
+            st.caption(f"מזהה אצווה (batch_id): {res.get('batch_id')}")
+    else:
+        ins("blue", "🔎", "אימות מלא עבר בהצלחה",
+            f"מאגר: {res.get('verified_rows', 0):,} שורות נקראו חזרה מהדיסק · "
+            f"{backend}: {res.get('rows_in_master', 0):,} שורות ל-{kind_label} "
+            f"בחודשים {', '.join(res.get('months_found', [])) or '—'} · "
+            "הדשבורד עודכן — הנתונים יופיעו בכל הטאבים והגרפים.")
+    st.caption(f"מיקום הקובץ הקבוע (גיבוי מקומי): {res.get('store_path', '')}")
 
 
 def _render_history(kind: str, project_id: str) -> None:
