@@ -409,6 +409,10 @@ def _render_cumulative_import(projects: list[dict]) -> None:
 
     is_ledger = report_type == _LEDGER_LABEL
 
+    # ── בנייה-מחדש בטוחה לפי document_date (לכרטסת בלבד, אם קיים מאגר) ──
+    if is_ledger:
+        _render_rebuild_section(project_id, project_name)
+
     # ── 2. העלאת קובץ ──
     sec("2. העלאת קובץ")
     st.caption("ניתן להעלות דוח מצטבר (לדוגמה כרטסת 01/01/2025 → היום). "
@@ -456,6 +460,83 @@ def _render_cumulative_import(projects: list[dict]) -> None:
             "credit": "יתרת זכות", "balance": "יתרה נטו", "group": "קבוצה"})
         _render_balance_import_controls(
             project_id, project_name, df, up.name, report_date, source)
+
+
+def _render_rebuild_section(project_id, project_name) -> None:
+    """בנייה-מחדש בטוחה של מאגר התנועות לפי תאריך מסמך — תצוגה מקדימה + ביצוע.
+
+    מוצג רק כשקיים מאגר תנועות לפרויקט. כל שינוי מגובה אוטומטית, מציג
+    תצוגה מקדימה של מה ישתנה, ולא מוחק נתונים (ממזג כפילויות בלבד).
+    """
+    import pandas as pd
+    from core import ledger_rebuild, ledger_store
+
+    if not ledger_store.has_store(project_id):
+        return
+
+    with st.expander("🔧 בנייה-מחדש בטוחה לפי תאריך מסמך (document_date)",
+                     expanded=False):
+        st.caption("מסדר מחדש את שיוך החודשים ואת זיהוי הכפילויות לפי "
+                   "תאריך המסמך/אסמכתא — בלי יבוא חוזר ובלי מחיקת נתונים. "
+                   "גיבוי של המאגר ושל master.parquet נשמר אוטומטית לפני כל שינוי.")
+
+        preview = ledger_rebuild.analyze_rebuild(project_id)
+        if not preview["has_store"]:
+            st.info("אין מאגר תנועות לפרויקט זה.")
+            return
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("תנועות במאגר", f"{preview['rows']:,}")
+        c2.metric("ישנו חודש", f"{preview['rows_moved_month']:,}")
+        c3.metric("כפילויות שיתמזגו", f"{preview['duplicates_collapsed']:,}")
+        c4.metric("ללא תאריך מסמך", f"{preview['rows_no_document_date']:,}")
+        st.caption(f"תנועות לאחר הבנייה-מחדש: {preview['rows_after']:,}")
+
+        if preview["month_moves"]:
+            st.caption("מעברי חודש צפויים:")
+            mv = pd.DataFrame(preview["month_moves"])
+            _show_he(mv, {"from": "מחודש", "to": "לחודש", "count": "תנועות"})
+
+        if not preview["has_document_date"]:
+            ins("amber", "⚠️", "אין עמודת תאריך מסמך במאגר",
+                "המאגר נוצר לפני התמיכה בתאריך מסמך — שורות ללא תאריך מסמך "
+                "ישתמשו בתאריך הערך כגיבוי. לדיוק מלא מומלץ לייבא מחדש את "
+                "הכרטסת המעודכנת (מצב 'החלף את כל הנתונים בטווח התאריכים').")
+
+        if not preview["needs_rebuild"]:
+            st.success("המאגר כבר מסונכרן לפי תאריך מסמך — אין צורך בבנייה-מחדש.")
+            return
+
+        ins("amber", "💾", "גיבוי לפני שינוי",
+            "לפני הבנייה-מחדש יישמר גיבוי חתום-זמן של מאגר התנועות וגם של "
+            "master.parquet. הפעולה הפיכה על-ידי שחזור מהגיבוי.")
+
+        if st.button("✅ בצע בנייה-מחדש בטוחה", type="primary",
+                     use_container_width=True, key=f"rebuild_{project_id}"):
+            with st.spinner("מגבה, בונה מאגר מחדש ומרענן מאסטר..."):
+                res = ledger_rebuild.apply_rebuild(project_id)
+                if res.get("applied"):
+                    build_master()
+                    st.cache_data.clear()
+            if res.get("applied"):
+                st.success(
+                    f"הבנייה-מחדש הושלמה: {res['rows']:,} → "
+                    f"{res['rows_after']:,} תנועות.")
+                if res.get("backup_store"):
+                    st.caption(f"גיבוי מאגר: {res['backup_store']}")
+                try:
+                    from core import db
+                    db.log_event("ledger_rebuild", {
+                        "project_id": project_id,
+                        "rows_before": res["rows"],
+                        "rows_after": res["rows_after"],
+                        "rows_moved_month": res["rows_moved_month"],
+                        "duplicates_collapsed": res["duplicates_collapsed"],
+                    })
+                except Exception:
+                    pass
+            else:
+                st.error(f"הבנייה-מחדש נכשלה: {res.get('error', 'שגיאה לא ידועה')}")
 
 
 def _render_ledger_import_controls(project_id, project_name, df, file_name,
