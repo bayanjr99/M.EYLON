@@ -24,6 +24,12 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# כפה פלט UTF-8 (קונסול Windows ברירת-מחדל cp1255 משבש עברית).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 import pandas as pd  # noqa: E402
 
 import pipeline  # noqa: E402
