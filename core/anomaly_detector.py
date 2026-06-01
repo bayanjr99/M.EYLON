@@ -1,11 +1,13 @@
 """זיהוי חריגות בנתוני פרויקט - הלב של מערכת הביקורת.
 
-מבצע 5 בדיקות עיקריות:
+מבצע את הבדיקות הבאות:
     1. חריגת צריכת סולר (ליטר/שעה > תקן עליון).
     2. תדלוקים ללא שעות עבודה.
     3. שעות עבודה חריגות (>14 ביום, או שליליות).
     4. חיובים גדולים מאוד (>100,000 ש"ח).
     5. תנועות עם מילות מפתח חשודות.
+    6. תנועות 'יתומות' — ללא ספק וללא פרטים.
+    7. תנועות הנהלת חשבונות ללא תאריך מסמך (אסמכתא).
 
 כל flag נשמר כ-JSON בעמודה anomaly_flags של master.parquet.
 """
@@ -209,6 +211,32 @@ def detect_unassigned_transactions(df_master: pd.DataFrame) -> pd.DataFrame:
     return flagged[available].reset_index(drop=True)
 
 
+def detect_missing_document_date(df_master: pd.DataFrame) -> pd.DataFrame:
+    """בדיקה 7: תנועות הנהלת חשבונות ללא תאריך מסמך (אסמכתא).
+
+    שיוך חודשי תקין מסתמך על *תאריך המסמך* (תאריך אסמכתא). כאשר הוא חסר,
+    המערכת נופלת חזרה לתאריך הערך — מה שעלול לשייך תנועה לחודש שגוי.
+    מסמנים רק שורות chashbashevet עם סכום, שאין להן document_date.
+    """
+    cols = ["project_id", "month", "date", "account_num", "account_name",
+            "supplier", "description", "amount"]
+    if df_master.empty or "document_date" not in df_master.columns:
+        return pd.DataFrame(columns=cols)
+
+    src_col = df_master.get("source", pd.Series(["chashbashevet"] * len(df_master)))
+    mask_src = src_col == "chashbashevet"
+    doc = pd.to_datetime(df_master["document_date"], errors="coerce")
+    mask_missing = doc.isna()
+    amt = pd.to_numeric(df_master.get("amount", 0), errors="coerce").fillna(0)
+    mask_amount = amt.abs() > 0
+
+    flagged = df_master[mask_src & mask_missing & mask_amount].copy()
+    if flagged.empty:
+        return pd.DataFrame(columns=cols)
+    available = [c for c in cols if c in flagged.columns]
+    return flagged[available].reset_index(drop=True)
+
+
 def detect_suspicious_descriptions(df_master: pd.DataFrame) -> pd.DataFrame:
     """בדיקה 5: תנועות עם מילות מפתח חשודות בתיאור."""
     cols = ["project_id", "month", "date", "account_num", "supplier",
@@ -316,6 +344,21 @@ def run_all_checks(
             "entity": str(r.get("account_num", "")),
             "details": f"תנועה ללא ספק/פרטים: {r.get('account_name', '')} ({r['amount']:,.0f} ש\"ח)",
             "estimated_impact_nis": float(abs(r["amount"])),
+        })
+
+    # בדיקה 7 - תנועות ללא תאריך מסמך (אסמכתא)
+    no_doc_date = detect_missing_document_date(df_master)
+    for _, r in no_doc_date.iterrows():
+        rows.append({
+            "project_id": r.get("project_id", project_id),
+            "month": r.get("month", ""),
+            "check_type": "missing_document_date",
+            "severity": "medium",
+            "entity": str(r.get("account_num", "")),
+            "details": (f"תנועה ללא תאריך מסמך (אסמכתא): "
+                        f"{r.get('account_name', '')} / {r.get('supplier', '')} "
+                        f"({r.get('amount', 0):,.0f} ש\"ח) — שויכה לפי תאריך ערך"),
+            "estimated_impact_nis": 0.0,
         })
 
     # בדיקה 5
