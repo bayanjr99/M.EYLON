@@ -72,6 +72,7 @@ KINDS: dict[str, dict] = {
         # מפתח לוגי (ללא סכומים) — לזיהוי "שורה שהשתנתה"
         "key_fields": ["date", "license_num", "supplier", "invoice_num"],
         "select_options": {"fuel_type": FUEL_TYPES + [FUEL_DEFAULT]},
+        "summary_fields": [("liters", 'סה"כ ליטרים'), ("amount", 'סה"כ סכום')],
     },
     "hours": {
         "label": "שעות עבודה",
@@ -100,8 +101,79 @@ KINDS: dict[str, dict] = {
                         "ot_125", "ot_150", "ot_175", "ot_200", "total_hours"],
         "key_fields": ["date", "employee_name", "site", "work_type"],
         "select_options": {},
+        "summary_fields": [("total_hours", 'סה"כ שעות'),
+                           ("total_cost", 'סה"כ עלות')],
+    },
+    # ── ניצול דלק (צריכה בפועל) — נפרד מ-רכש ────────────────────
+    "fuel_usage": {
+        "label": "ניצול דלק",
+        "store_file": "_manual_fuel_usage_store.parquet",
+        "columns": [
+            ("date", "תאריך", "date"),
+            ("license_num", "מספר כלי / רכב", "int"),
+            ("tool_name", "שם כלי / רכב", "text"),
+            ("operator", "מפעיל / נהג", "text"),
+            ("site", "אתר", "text"),
+            ("fuel_type", "סוג דלק", "select"),
+            ("liters_used", "ליטרים שנוצלו", "float"),
+            ("tool_hours", "שעות מנוע / כלי", "float"),
+            ("work_type", "סוג עבודה", "text"),
+            ("notes", "הערות", "text"),
+        ],
+        # תאריך חובה + לפחות אחד מ-(ליטרים שנוצלו / שעות מנוע)
+        "required_all": ["date"],
+        "required_any": [["liters_used", "tool_hours"]],
+        "warn_any": [["tool_name", "license_num"], ["operator"], ["site"]],
+        "hash_fields": ["date", "license_num", "operator", "site",
+                        "liters_used", "tool_hours"],
+        "key_fields": ["date", "license_num", "operator", "site"],
+        "select_options": {"fuel_type": FUEL_TYPES + [FUEL_DEFAULT]},
+        "summary_fields": [("liters_used", 'סה"כ ליטרים שנוצלו'),
+                           ("tool_hours", 'סה"כ שעות מנוע')],
+    },
+    # ── כלים / ציוד (נתוני ייחוס — לא תנועות) ───────────────────
+    "tools": {
+        "label": "כלים / ציוד",
+        "store_file": "_manual_tools_store.parquet",
+        "columns": [
+            # תאריך ההתחלה משמש גם כתאריך השורה (לשיוך חודשי גנרי)
+            ("date", "תאריך התחלה", "date"),
+            ("license_num", "מספר כלי", "int"),
+            ("tool_name", "שם כלי", "text"),
+            ("tool_type", "סוג כלי", "text"),
+            ("status", "סטטוס", "select"),
+            ("end_date", "תאריך סיום", "date"),
+            ("monthly_cost", "עלות חודשית", "float"),
+            ("notes", "הערות", "text"),
+        ],
+        # תאריך התחלה חובה + זיהוי כלי (מספר או שם)
+        "required_all": ["date"],
+        "required_any": [["license_num", "tool_name"]],
+        "warn_any": [["tool_type"], ["status"], ["monthly_cost"]],
+        # זהות מלאה (כולל שינוי סטטוס/תאריכים/עלות = שורה שונה)
+        "hash_fields": ["date", "license_num", "tool_name", "status",
+                        "end_date", "monthly_cost"],
+        # מפתח לוגי: כלי מזוהה לפי מספר+שם — עריכת תאריכים/עלות = "עדכון"
+        "key_fields": ["license_num", "tool_name"],
+        "select_options": {"status": ["פעיל", "לא פעיל"]},
+        "summary_fields": [("monthly_cost", 'סה"כ עלות חודשית')],
     },
 }
+
+# סוגים שזורמים ל-master.parquet (תנועות). שאר הסוגים (כלים/ניצול) הם
+# נתוני ייחוס/צריכה ומאומתים מול המאגר עצמו, לא מול master.
+MASTER_KINDS = {"solar", "hours"}
+
+
+def flows_to_master(kind: str) -> bool:
+    """האם הזנה מסוג זה זורמת ל-master.parquet (תנועה) או לא (נתוני ייחוס)."""
+    return kind in MASTER_KINDS
+
+
+def summary_fields(kind: str) -> list[tuple[str, str]]:
+    """מחזיר (column, label) לשתי המטריקות התחתונות בסיכום היבוא לפי הסוג."""
+    return KINDS.get(kind, {}).get("summary_fields", [])
+
 
 # עמודות שעות (לחישוב סה"כ אוטומטי)
 _OT_COLS = ["regular_hours", "ot_125", "ot_150", "ot_175", "ot_200"]
@@ -155,6 +227,40 @@ COLUMN_SYNONYMS: dict[str, dict[str, list[str]]] = {
         "total_cost": ["סה\"כ עלות", "סהכ עלות", "עלות כוללת", "עלות כולל",
                        "total cost", "total_cost"],
         "notes": ["הערות", "הערה", "notes"],
+    },
+    "fuel_usage": {
+        "date": ["תאריך", "תאריך תדלוק", "תאריך ניצול", "יום", "date"],
+        "license_num": ["מספר כלי", "מספר רכב", "מס כלי", "מס רכב", "מס' כלי",
+                        "מס' רכב", "כלי", "רכב", "מספר רישוי", "רישוי",
+                        "license", "license_num"],
+        "tool_name": ["שם כלי", "שם רכב", "שם הכלי", "תיאור כלי", "כלי / רכב",
+                      "שם כלי / רכב", "תיאור", "tool", "tool_name"],
+        "operator": ["מפעיל", "נהג", "שם מפעיל", "שם נהג", "עובד", "operator",
+                     "driver"],
+        "site": ["אתר", "מקום עבודה", "אתר עבודה", "מיקום", "site"],
+        "fuel_type": ["סוג דלק", "דלק", "סוג", "fuel", "fuel_type"],
+        "liters_used": ["ליטרים שנוצלו", "ליטרים", "כמות", "כמות דלק",
+                        "ניצול", "ליטר שנוצל", "צריכה", "liters", "liters_used",
+                        "consumed"],
+        "tool_hours": ["שעות מנוע", "שעות כלי", "שעות עבודה", "שעות מונה",
+                       "מונה", "engine hours", "tool_hours", "engine_hours"],
+        "work_type": ["סוג עבודה", "תפקיד", "עבודה", "work", "work_type"],
+        "notes": ["הערות", "הערה", "פירוט", "notes"],
+    },
+    "tools": {
+        "date": ["תאריך התחלה", "תאריך תחילה", "התחלה", "מתאריך", "תאריך",
+                 "start date", "start_date", "date"],
+        "license_num": ["מספר כלי", "מספר רכב", "מס כלי", "מס' כלי", "כלי",
+                        "מספר רישוי", "רישוי", "license", "license_num",
+                        "tool_number"],
+        "tool_name": ["שם כלי", "שם הכלי", "תיאור כלי", "תיאור", "שם",
+                      "tool", "tool_name"],
+        "tool_type": ["סוג כלי", "סוג", "קטגוריה", "type", "tool_type"],
+        "status": ["סטטוס", "מצב", "פעיל", "status", "active"],
+        "end_date": ["תאריך סיום", "סיום", "עד תאריך", "end date", "end_date"],
+        "monthly_cost": ["עלות חודשית", "עלות לחודש", "שכירות חודשית",
+                         "מחיר חודשי", "עלות", "monthly cost", "monthly_cost"],
+        "notes": ["הערות", "הערה", "פירוט", "notes"],
     },
 }
 
@@ -715,6 +821,7 @@ def _empty_summary() -> dict:
         "store_before": 0, "store_after": 0,
         "date_min": None, "date_max": None, "months": [],
         "amount_sum": 0.0, "liters_sum": 0.0, "hours_sum": 0.0,
+        "field_sums": {},
         # תאימות ל-db.log_import
         "no_date_count": 0, "no_amount_count": 0,
         "debit_sum": 0.0, "credit_sum": 0.0,
@@ -754,6 +861,16 @@ def analyze(project_id: str, kind: str, incoming: pd.DataFrame,
         summary["amount_sum"] = float(pd.to_numeric(valid["total_cost"], errors="coerce").fillna(0).sum())
     elif "amount" in valid.columns:
         summary["amount_sum"] = float(pd.to_numeric(valid["amount"], errors="coerce").fillna(0).sum())
+
+    # ── סכומי המטריקות הגנריות לפי summary_fields של הסוג ──
+    field_sums: dict[str, float] = {}
+    for col, _label in summary_fields(kind):
+        if col in valid.columns:
+            field_sums[col] = float(
+                pd.to_numeric(valid[col], errors="coerce").fillna(0).sum())
+        else:
+            field_sums[col] = 0.0
+    summary["field_sums"] = field_sums
 
     store = load_store(project_id, kind)
     has_rows = not store.empty and "row_hash" in store.columns

@@ -1065,6 +1065,27 @@ def verify_manual_persisted(project_id: str, kind: str,
     return verify_manual_in_master(project_id, kind, months)
 
 
+def _verify_manual_in_store(project_id: str, kind: str,
+                            months: list[str]) -> dict:
+    """אימות מקומי לסוגים שאינם ב-master (כלים/ניצול) — קריאה חוזרת מהמאגר.
+
+    סופר את שורות המאגר (parquet) לפי חודש ובודק שכל חודש שנשמר נמצא.
+    """
+    result = {"rows_in_master": 0, "months_found": [], "ok": False}
+    try:
+        store = manual_store.load_store(project_id, kind)
+    except Exception as e:
+        logger.exception("_verify_manual_in_store load failed: %s", e)
+        return result
+    if store is None or store.empty or "month" not in store.columns:
+        return result
+    found = sorted(store["month"].dropna().astype(str).unique().tolist())
+    result["rows_in_master"] = int(len(store))
+    result["months_found"] = found
+    result["ok"] = bool(months) and all(mo in found for mo in months)
+    return result
+
+
 def verify_manual_in_master(project_id: str, kind: str,
                             months: list[str]) -> dict:
     """אימות שהנתונים הידניים אכן הגיעו ל-master.parquet (קריאה מהדיסק).
@@ -1074,6 +1095,10 @@ def verify_manual_in_master(project_id: str, kind: str,
 
     מחזיר: {"rows_in_master": int, "months_found": [..], "ok": bool}
     """
+    # סוגים שאינם זורמים ל-master (כלים/ניצול דלק) — אימות מול המאגר עצמו.
+    if not manual_store.flows_to_master(kind):
+        return _verify_manual_in_store(project_id, kind, months)
+
     source = "solar" if kind == "solar" else "hours"
     result = {"rows_in_master": 0, "months_found": [], "ok": False}
     if not MASTER_PARQUET.exists():
