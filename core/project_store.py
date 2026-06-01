@@ -34,8 +34,13 @@ DATA_ROOT = PROJECT_ROOT / "data"
 PROJECTS_REGISTRY = DATA_ROOT / "projects_registry.xlsx"
 PROJECTS_DIR = DATA_ROOT / "projects"
 
-# תתי-תיקיות ברירת מחדל לכל פרויקט חדש
-DEFAULT_SUB_FOLDERS = ["documents", "uploads", "exports"]
+# תתי-תיקיות ברירת מחדל לכל פרויקט חדש.
+# imports/manual/reports/backups — מבנה עבודה מסודר לכל פרויקט;
+# documents/uploads/exports — נשמרים לתאימות לאחור.
+DEFAULT_SUB_FOLDERS = [
+    "imports", "manual", "reports", "backups",
+    "documents", "uploads", "exports",
+]
 
 # סטטוסים אפשריים + תרגום לעברית + צבע לתצוגה
 VALID_STATUSES = ["active", "completed", "future", "paused", "archived"]
@@ -257,6 +262,57 @@ def save_project_meta(project_id: str, data: dict) -> Path:
     return _write_project_meta(project_id, data)
 
 
+def _field_matches(field: str, expected, actual) -> bool:
+    """השוואה סלחנית בין ערך מבוקש לערך שנקרא חזרה מהדיסק.
+
+    תאריכים מושווים אחרי נרמול ל-ISO; סטטוס אחרי נרמול; שאר השדות
+    כמחרוזת מנוקה. מטפל ב-NaN/NaT.
+    """
+    if field in ("start_date", "end_date"):
+        return _fmt_date(expected) == _fmt_date(actual)
+    if field == "status":
+        return validate_project_status(expected) == validate_project_status(actual)
+    try:
+        if actual is None or (not isinstance(actual, str) and pd.isna(actual)):
+            actual = ""
+    except (TypeError, ValueError):
+        pass
+    return str(expected or "").strip() == str(actual or "").strip()
+
+
+def verify_project_persisted(project_id: str, expected: dict | None = None) -> dict:
+    """קורא מחדש מהדיסק ומוודא שהפרויקט נשמר באמת (read-back).
+
+    בודק: (1) הפרויקט קיים ברגיסטרי; (2) תיקיית הפרויקט קיימת;
+    (3) project_meta.json קיים; (4) אם expected סופק — שהשדות תואמים.
+
+    Returns:
+        dict: {ok, in_registry, folder_exists, meta_exists, mismatches:[...]}.
+    """
+    result = {"ok": False, "in_registry": False, "folder_exists": False,
+              "meta_exists": False, "mismatches": []}
+    pid = (project_id or "").strip()
+    if not pid:
+        return result
+
+    registry = load_projects_registry()
+    rows = registry[registry["project_id"].astype(str) == pid] \
+        if not registry.empty else registry
+    result["in_registry"] = bool(len(rows))
+    result["folder_exists"] = (PROJECTS_DIR / pid).exists()
+    result["meta_exists"] = _meta_path(pid).exists()
+
+    if result["in_registry"] and expected:
+        saved = rows.iloc[0].to_dict()
+        for k, v in expected.items():
+            if k in REGISTRY_COLS and not _field_matches(k, v, saved.get(k)):
+                result["mismatches"].append(k)
+
+    result["ok"] = (result["in_registry"] and result["folder_exists"]
+                    and result["meta_exists"] and not result["mismatches"])
+    return result
+
+
 def load_project_meta(project_id: str) -> dict:
     """טוען project_meta.json. מחזיר dict ריק אם לא קיים."""
     p = _meta_path(project_id)
@@ -314,10 +370,15 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
     # Validate status
     status = validate_project_status(project_data.get("status", "active"))
 
-    # Load registry + uniqueness check
+    # Load registry + uniqueness check (גם לפי מזהה וגם לפי שם)
     registry = load_projects_registry()
     if not registry.empty and pid in registry["project_id"].astype(str).values:
         return False, f"project_id '{pid}' כבר קיים - לא ניתן לדרוס", ""
+    if not registry.empty:
+        from utils.hebrew import match_normalize
+        existing_names = registry["project_name"].fillna("").astype(str).apply(match_normalize)
+        if match_normalize(pname) in set(existing_names):
+            return False, f"פרויקט בשם '{pname}' כבר קיים", ""
 
     # Build new row
     new_row = {
@@ -350,7 +411,17 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
         logger.exception("Failed to create project folders: %s", e)
         return False, f"הרגיסטרי עודכן אבל יצירת תיקיות נכשלה: {e}", pid
 
-    logger.info("Created project: %s (%s)", pid, pname)
+    # read-back: לא להחזיר הצלחה לפני קריאה חוזרת מהדיסק שמאמתת שהכל נשמר
+    check = verify_project_persisted(pid, new_row)
+    if not check["ok"]:
+        logger.error("create_project read-back failed for %s: %s", pid, check)
+        return False, ("הפרויקט נכתב אך האימות (read-back) נכשל — "
+                       f"registry={check['in_registry']}, "
+                       f"folder={check['folder_exists']}, "
+                       f"meta={check['meta_exists']}, "
+                       f"שדות לא תואמים={check['mismatches']}"), pid
+
+    logger.info("Created project (verified): %s (%s)", pid, pname)
     try:
         from core import db
         db.log_event("project_created", {
@@ -430,7 +501,14 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
         logger.exception("Failed to write project_meta.json: %s", e)
         return False, f"הרגיסטרי עודכן אבל כתיבת project_meta.json נכשלה: {e}"
 
-    logger.info("Updated project %s: %s", pid, list(normalized.keys()))
+    # read-back: לא להחזיר הצלחה לפני קריאה חוזרת מהדיסק שמאמתת את השינוי
+    check = verify_project_persisted(pid, normalized)
+    if not check["ok"]:
+        logger.error("update_project read-back failed for %s: %s", pid, check)
+        return False, ("העדכון נכתב אך האימות (read-back) נכשל — "
+                       f"שדות שלא נשמרו: {check['mismatches'] or 'לא ידוע'}")
+
+    logger.info("Updated project (verified) %s: %s", pid, list(normalized.keys()))
     # audit
     try:
         from core import db

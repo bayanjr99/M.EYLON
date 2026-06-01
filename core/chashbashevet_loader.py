@@ -5,8 +5,9 @@
 - כל חשבון מתחיל בשורת כותרת:
     עמודה A = שם החשבון, עמודה B = מספר חשבון.
 - אחריה שורות תנועה:
-    עמודה I = תאריך אסמכתא (datetime)
-    עמודה J = תאריך ערך (datetime) ← מזהה שורת תנועה
+    עמודה I = תאריך אסמכתא / מסמך (datetime) ← **התאריך הקובע לחודש**
+    עמודה J = תאריך ערך (datetime) — תאריך סליקה, fallback בלבד
+    שורה נחשבת תנועה אם יש בה תאריך מסמך או תאריך ערך.
     עמודה M = פרטים (string)
     עמודה O = חובה (number)
     עמודה P = זכות (number)
@@ -105,8 +106,14 @@ COL_DEBIT = 14         # O - חובה
 COL_CREDIT = 15        # P - זכות
 
 # סכמת ה-DataFrame המוחזר
+# הערה על תאריכים:
+#   date          = התאריך הקובע לשיוך חודשי. עדיפות: תאריך מסמך/אסמכתא
+#                   (עמודה I), ורק אם חסר — תאריך ערך (עמודה J).
+#   document_date = תאריך המסמך/אסמכתא (עמודה I) — המקור הרשמי לחודש.
+#   value_date    = תאריך ערך (עמודה J) — תאריך הסליקה הבנקאי, לא לשיוך חודש.
 OUTPUT_COLS = [
-    "account_num", "account_name", "date", "details",
+    "account_num", "account_name", "date", "document_date", "value_date",
+    "details",
     "debit", "credit", "amount", "supplier",
     # 7 שדות סיווג מ-classify_transaction
     "account_type", "main_category", "sub_category",
@@ -161,7 +168,13 @@ def load_chashbashevet(file_path: str | Path) -> pd.DataFrame:
         if current_account_num is None or not _is_transaction_row(row):
             continue
 
-        date_val = pd.to_datetime(row.iloc[COL_DATE_VALUE], errors="coerce")
+        # תאריכים: מסמך/אסמכתא (עמודה I) הוא הקובע לחודש; ערך (עמודה J)
+        # הוא תאריך הסליקה. עדיפות: document_date, ואם חסר — value_date.
+        doc_date = pd.to_datetime(row.iloc[COL_DATE_REF], errors="coerce") \
+            if len(row) > COL_DATE_REF else pd.NaT
+        val_date = pd.to_datetime(row.iloc[COL_DATE_VALUE], errors="coerce") \
+            if len(row) > COL_DATE_VALUE else pd.NaT
+        date_val = doc_date if pd.notna(doc_date) else val_date
         if pd.isna(date_val):
             continue
 
@@ -193,6 +206,8 @@ def load_chashbashevet(file_path: str | Path) -> pd.DataFrame:
             "account_num": current_account_num,
             "account_name": current_account_name,
             "date": date_val,
+            "document_date": doc_date,
+            "value_date": val_date,
             "details": details,
             "debit": debit,
             "credit": credit,
@@ -229,13 +244,17 @@ def _extract_supplier(details: str) -> str:
 
 
 def _is_transaction_row(row: pd.Series) -> bool:
-    """בודק אם שורה היא שורת תנועה (יש לה תאריך ערך בעמודה J)."""
-    if len(row) <= COL_DATE_VALUE:
-        return False
-    val = row.iloc[COL_DATE_VALUE]
-    if pd.isna(val):
-        return False
-    return not pd.isna(pd.to_datetime(val, errors="coerce"))
+    """בודק אם שורה היא שורת תנועה (יש לה תאריך מסמך או תאריך ערך).
+
+    מזהה תנועה לפי תאריך מסמך/אסמכתא (עמודה I) *או* תאריך ערך (עמודה J),
+    כך ששורות שיש בהן רק תאריך מסמך לא יושמטו.
+    """
+    for col in (COL_DATE_REF, COL_DATE_VALUE):
+        if len(row) > col:
+            val = row.iloc[col]
+            if not pd.isna(val) and not pd.isna(pd.to_datetime(val, errors="coerce")):
+                return True
+    return False
 
 
 def _safe_str(val) -> str:

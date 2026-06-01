@@ -542,12 +542,16 @@ def _render_summary(kind: str, summary: dict, mode_key: str) -> None:
     n1, n2, n3, n4 = st.columns(4)
     n1.metric("שורות חדשות", f"{summary['new_count']:,}")
     n2.metric("שורות שהשתנו", f"{summary['updated_count']:,}")
-    if kind == "solar":
-        n3.metric('סה"כ ליטרים', format_number(summary.get("liters_sum", 0)))
-        n4.metric('סה"כ סכום', format_currency(summary.get("amount_sum", 0)))
-    else:
-        n3.metric('סה"כ שעות', format_number(summary.get("hours_sum", 0)))
-        n4.metric('סה"כ עלות', format_currency(summary.get("amount_sum", 0)))
+    # מטריקות סכום גנריות לפי summary_fields של הסוג (עד 2)
+    _cost_cols = {"amount", "total_cost", "monthly_cost", "cost"}
+    field_sums = summary.get("field_sums", {}) or {}
+    slots = [n3, n4]
+    for slot, (col, label) in zip(slots, manual_store.summary_fields(kind)):
+        val = field_sums.get(col, 0)
+        if col in _cost_cols:
+            slot.metric(label, format_currency(val))
+        else:
+            slot.metric(label, format_number(val))
 
     if summary["months"]:
         st.caption("חודשים מושפעים: " + ", ".join(summary["months"]))
@@ -604,17 +608,14 @@ def render_manual_entry_page(projects: list[dict]) -> None:
         )
         return
 
-    tab_solar, tab_hours, tab_tools = st.tabs([
-        "⛽ סולר", "⏱️ שעות עבודה", "🔧 כלים / ציוד",
+    tab_solar, tab_usage, tab_hours, tab_tools = st.tabs([
+        "⛽ סולר (רכש)", "🛢️ ניצול דלק", "⏱️ שעות עבודה", "🔧 כלים / ציוד",
     ])
     with tab_solar:
         _render_kind("solar", projects)
+    with tab_usage:
+        _render_kind("fuel_usage", projects)
     with tab_hours:
         _render_kind("hours", projects)
     with tab_tools:
-        empty_state(
-            icon="ti-tools",
-            title="כלים / ציוד — בקרוב",
-            body_html="הזנת כלים וציוד תתווסף בשלב הבא. כרגע ניתן להזין "
-                      "סולר ושעות עבודה.",
-        )
+        _render_kind("tools", projects)

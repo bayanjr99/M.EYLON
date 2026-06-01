@@ -65,18 +65,23 @@ def _file_mtime(path: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
-def _load_master(_mtime: float) -> pd.DataFrame:
+def _load_master(mtime: float) -> pd.DataFrame:
     """טוען master.parquet + הזנות ידניות חיות מ-Neon (אם מוגדר).
 
-    הקאש מתאפס כשהקובץ משתנה; אחרי שמירה ידנית מתבצע cache_data.clear()
-    כך שהזנות חדשות מ-Neon נטענות מיד.
+    ``mtime`` הוא מפתח הקאש: כשקובץ master.parquet משתנה — ה-mtime משתנה
+    וה-קאש מתבטל אוטומטית. (חובה ששם הפרמטר *לא* יתחיל ב-'_' אחרת
+    Streamlit לא מכליל אותו במפתח הקאש והאינvalidation לא עובד.)
     """
     return pipeline.load_master_merged()
 
 
 @st.cache_data(show_spinner=False)
-def _load_projects(_mtime: float) -> list[dict]:
-    """טוען רשימת פרויקטים. הקאש מתאפס כשהקובץ משתנה."""
+def _load_projects(mtime: float) -> list[dict]:
+    """טוען רשימת פרויקטים. ``mtime`` הוא מפתח הקאש — משתנה כשהקובץ משתנה.
+
+    שם הפרמטר ללא '_' מוביל — אחרת Streamlit מתעלם ממנו והקאש לעולם
+    לא מתבטל אוטומטית (היה באג: עריכת פרויקט לא נראתה אחרי רענון).
+    """
     return pipeline.list_available_projects()
 
 

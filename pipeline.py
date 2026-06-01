@@ -51,6 +51,8 @@ CACHE_ROOT = PROJECT_ROOT / "output" / "cache"
 # ── סכמת master.parquet ───────────────────────────────────────
 MASTER_SCHEMA_COLS = [
     "project_id", "project_name", "month", "date",
+    # תאריך המסמך/אסמכתא (הקובע לחודש) + תאריך הערך (סליקה — לא לשיוך חודש)
+    "document_date", "value_date",
     "category", "subcategory",
     "account_num", "account_name",
     "supplier", "description",
@@ -66,6 +68,29 @@ MASTER_SCHEMA_COLS = [
     # שעות
     "work_hours",
 ]
+
+# עמודות מספריות (float) בסכמת master. משמש לייצוב dtype אחרי pd.concat —
+# concat של מסגרת שחסרה ערך באחת מהן (NaN/NA) עלול לשדרג עמודה ל-object,
+# ומאז כל ניסיון .round()/חישוב נומרי קורס. תמיד נכפה אותן חזרה ל-float.
+MASTER_NUMERIC_COLS = [
+    "amount", "debit", "credit", "net_amount", "signed_amount",
+    "liters", "engine_hours", "work_hours",
+]
+
+
+def coerce_master_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """מכריח את עמודות הכסף/הכמויות חזרה ל-float64 (NaN לערכים חסרים).
+
+    מונע באג dtype=object שנוצר כש-pd.concat ממזג מסגרות שחלקן חסרות
+    ערך מספרי — מה שגרם ל-TypeError ב-.round() בטאב בקרת איכות.
+    אינו משנה ערכים, רק טיפוס.
+    """
+    if df is None or df.empty:
+        return df
+    for col in MASTER_NUMERIC_COLS:
+        if col in df.columns and df[col].dtype == object:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 def list_available_projects() -> list[dict]:
@@ -470,6 +495,8 @@ def aggregate_month(
             "project_name": project_name,
             "month": month,
             "date": chash["date"],
+            "document_date": chash.get("document_date", chash["date"]),
+            "value_date": chash.get("value_date", pd.NaT),
             # category/subcategory תאימות לאחור: מעתה ערכי main_category/sub_category
             "category": chash.get("main_category", chash.get("category", "")),
             "subcategory": chash.get("sub_category", chash.get("subcategory", "")),
@@ -502,6 +529,7 @@ def aggregate_month(
             "project_name": project_name,
             "month": month,
             "date": solar["date"],
+            "document_date": solar["date"],
             "category": "סולר וצמ\"ה",
             "subcategory": "תדלוק",
             "account_num": pd.NA,
@@ -526,6 +554,7 @@ def aggregate_month(
             "project_name": project_name,
             "month": month,
             "date": hours["date"],
+            "document_date": hours["date"],
             "category": "שעות עבודה",
             "subcategory": "",
             "account_num": pd.NA,
@@ -638,6 +667,8 @@ def aggregate_store_chashbashevet(project_id: str, project_name: str) -> pd.Data
         "project_name": project_name,
         "month": months,
         "date": dt,
+        "document_date": _col("document_date", dt),
+        "value_date": _col("value_date", pd.NaT),
         "category": _col("main_category", _col("category", "")),
         "subcategory": _col("sub_category", _col("subcategory", "")),
         "account_num": _col("account_num"),
@@ -693,6 +724,7 @@ def aggregate_manual_solar(project_id: str, project_name: str,
         "project_name": project_name,
         "month": months,
         "date": dt,
+        "document_date": dt,
         "category": "סולר וצמ\"ה",
         "subcategory": _col("fuel_type", "תדלוק"),
         "account_num": pd.NA,
@@ -700,6 +732,8 @@ def aggregate_manual_solar(project_id: str, project_name: str,
         "supplier": _col("supplier", ""),
         "description": _col("tool_name", "").astype(str),
         "amount": 0.0,
+        "net_amount": 0.0,
+        "signed_amount": 0.0,
         "source": "solar",
         "anomaly_flags": "",
         "license_num": _col("license_num"),
@@ -739,6 +773,7 @@ def aggregate_manual_hours(project_id: str, project_name: str,
         "project_name": project_name,
         "month": months,
         "date": dt,
+        "document_date": dt,
         "category": "שעות עבודה",
         "subcategory": _col("work_type", ""),
         "account_num": pd.NA,
@@ -746,6 +781,8 @@ def aggregate_manual_hours(project_id: str, project_name: str,
         "supplier": "",
         "description": _col("employee_name", "").astype(str),
         "amount": 0.0,
+        "net_amount": 0.0,
+        "signed_amount": 0.0,
         "source": "hours",
         "anomaly_flags": "",
         "license_num": pd.NA,
@@ -929,10 +966,18 @@ def build_master() -> pd.DataFrame:
 
 
 def load_master() -> pd.DataFrame:
-    """טוען את master.parquet אם קיים. אחרת מחזיר DataFrame ריק עם הסכמה."""
+    """טוען את master.parquet אם קיים. אחרת מחזיר DataFrame ריק עם הסכמה.
+
+    משלים עמודות סכמה חסרות (parquet ישן שנבנה לפני הוספת עמודה חדשה,
+    למשל document_date/value_date) כדי שצרכנים שמסתמכים עליהן לא יקרסו.
+    """
     if MASTER_PARQUET.exists():
         try:
-            return pd.read_parquet(MASTER_PARQUET)
+            df = pd.read_parquet(MASTER_PARQUET)
+            for col in MASTER_SCHEMA_COLS:
+                if col not in df.columns:
+                    df[col] = pd.NaT if col in ("document_date", "value_date") else pd.NA
+            return df
         except Exception as e:
             logger.exception("Failed to load master parquet: %s", e)
     return pd.DataFrame(columns=MASTER_SCHEMA_COLS)
@@ -997,7 +1042,11 @@ def load_master_merged() -> pd.DataFrame:
         return m
     nm = pd.concat(neon_frames, ignore_index=True, sort=False)
     nm["origin"] = "neon_manual"  # סימון ברור — נתון ידני מהענן
-    return pd.concat([m, nm], ignore_index=True, sort=False)
+    merged = pd.concat([m, nm], ignore_index=True, sort=False)
+    # ייצוב dtype: ה-concat עלול לשדרג עמודות כסף ל-object (שורות Neon
+    # חסרות net_amount/signed_amount). מכריחים חזרה ל-float כדי שחישובי
+    # .round()/סטטיסטיקה בטאבים לא יקרסו (באג ה-TypeError בטאב בקרת איכות).
+    return coerce_master_numeric(merged)
 
 
 def verify_manual_persisted(project_id: str, kind: str,
@@ -1016,6 +1065,27 @@ def verify_manual_persisted(project_id: str, kind: str,
     return verify_manual_in_master(project_id, kind, months)
 
 
+def _verify_manual_in_store(project_id: str, kind: str,
+                            months: list[str]) -> dict:
+    """אימות מקומי לסוגים שאינם ב-master (כלים/ניצול) — קריאה חוזרת מהמאגר.
+
+    סופר את שורות המאגר (parquet) לפי חודש ובודק שכל חודש שנשמר נמצא.
+    """
+    result = {"rows_in_master": 0, "months_found": [], "ok": False}
+    try:
+        store = manual_store.load_store(project_id, kind)
+    except Exception as e:
+        logger.exception("_verify_manual_in_store load failed: %s", e)
+        return result
+    if store is None or store.empty or "month" not in store.columns:
+        return result
+    found = sorted(store["month"].dropna().astype(str).unique().tolist())
+    result["rows_in_master"] = int(len(store))
+    result["months_found"] = found
+    result["ok"] = bool(months) and all(mo in found for mo in months)
+    return result
+
+
 def verify_manual_in_master(project_id: str, kind: str,
                             months: list[str]) -> dict:
     """אימות שהנתונים הידניים אכן הגיעו ל-master.parquet (קריאה מהדיסק).
@@ -1025,6 +1095,10 @@ def verify_manual_in_master(project_id: str, kind: str,
 
     מחזיר: {"rows_in_master": int, "months_found": [..], "ok": bool}
     """
+    # סוגים שאינם זורמים ל-master (כלים/ניצול דלק) — אימות מול המאגר עצמו.
+    if not manual_store.flows_to_master(kind):
+        return _verify_manual_in_store(project_id, kind, months)
+
     source = "solar" if kind == "solar" else "hours"
     result = {"rows_in_master": 0, "months_found": [], "ok": False}
     if not MASTER_PARQUET.exists():
