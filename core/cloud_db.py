@@ -414,3 +414,204 @@ def delete_project_kind(project_id: str, kind: str) -> int:
     except Exception as e:
         logger.exception("Neon delete_project_kind failed: %s", e)
         return 0
+
+
+# ── רישום פרויקטים (registry) — התמדה קבועה בענן ────────────────
+# בענן ``projects_registry.xlsx`` נכתב למערכת-קבצים זמנית ונמחק ב-reboot.
+# לכן עריכת פרטי פרויקט (שם לקוח/סטטוס) חייבת להישמר כאן, ב-Neon.
+# מחיקה מסומנת כ-tombstone (deleted_at) ולא נמחקת פיזית — כך פרויקט שנמחק
+# בענן לא "צף מחדש" מתוך ה-xLSX המחויב.
+_PROJECT_COLS = ["project_id", "project_name", "site_name", "client_name",
+                 "status", "start_date", "end_date", "notes"]
+_PROJECT_VALUE_COLS = ["project_name", "site_name", "client_name", "status",
+                       "start_date", "end_date", "notes"]
+
+
+def _txt(v):
+    """ערך טקסט נקי ל-DB (None עבור NaN/ריק)."""
+    try:
+        if v is None or (not isinstance(v, (list, dict)) and pd.isna(v)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return s or None
+
+
+def _ensure_projects_schema(conn) -> None:
+    """יוצר את טבלת projects_registry אם אינה קיימת (idempotent)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projects_registry (
+                project_id   TEXT PRIMARY KEY,
+                project_name TEXT,
+                site_name    TEXT,
+                client_name  TEXT,
+                status       TEXT,
+                start_date   TEXT,
+                end_date     TEXT,
+                notes        TEXT,
+                updated_at   TIMESTAMPTZ DEFAULT now(),
+                deleted_at   TIMESTAMPTZ
+            )
+            """
+        )
+
+
+def save_project(row: dict) -> dict:
+    """שומר/מעדכן שורת פרויקט ב-Neon (upsert) ומאמת ברמת-שדה.
+
+    Returns:
+        dict: {ok, verified, error?}. ``verified`` רק אם הקריאה החוזרת
+        מהענן מחזירה בדיוק את הערכים שנכתבו (אימות אמיתי).
+    """
+    res = {"ok": False, "verified": False}
+    if not is_configured():
+        return res
+    pid = (str(row.get("project_id")) or "").strip()
+    if not pid:
+        return res
+    vals = {c: _txt(row.get(c)) for c in _PROJECT_VALUE_COLS}
+    try:
+        with _connect() as conn:
+            _ensure_projects_schema(conn)
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO projects_registry
+                          (project_id, project_name, site_name, client_name,
+                           status, start_date, end_date, notes,
+                           updated_at, deleted_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), NULL)
+                        ON CONFLICT (project_id) DO UPDATE SET
+                          project_name = EXCLUDED.project_name,
+                          site_name    = EXCLUDED.site_name,
+                          client_name  = EXCLUDED.client_name,
+                          status       = EXCLUDED.status,
+                          start_date   = EXCLUDED.start_date,
+                          end_date     = EXCLUDED.end_date,
+                          notes        = EXCLUDED.notes,
+                          updated_at   = now(),
+                          deleted_at   = NULL
+                        """,
+                        (pid, vals["project_name"], vals["site_name"],
+                         vals["client_name"], vals["status"], vals["start_date"],
+                         vals["end_date"], vals["notes"]))
+            # read-back ברמת-שדה
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT project_name, site_name, client_name, status, "
+                    "start_date, end_date, notes FROM projects_registry "
+                    "WHERE project_id=%s AND deleted_at IS NULL", (pid,))
+                got = cur.fetchone()
+        verified = got is not None and all(
+            (got[i] or "") == (vals[c] or "")
+            for i, c in enumerate(_PROJECT_VALUE_COLS))
+        res["ok"] = True
+        res["verified"] = verified
+        logger.info("Neon save_project %s verified=%s", pid, verified)
+    except Exception as e:
+        logger.exception("Neon save_project failed: %s", e)
+        res["error"] = str(e)
+    return res
+
+
+def delete_project_row(project_id: str) -> bool:
+    """מסמן פרויקט כמחוק ב-Neon (tombstone). מחזיר True אם הצליח."""
+    if not is_configured():
+        return False
+    pid = (project_id or "").strip()
+    if not pid:
+        return False
+    try:
+        with _connect() as conn:
+            _ensure_projects_schema(conn)
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO projects_registry
+                          (project_id, deleted_at, updated_at)
+                        VALUES (%s, now(), now())
+                        ON CONFLICT (project_id) DO UPDATE SET
+                          deleted_at = now(), updated_at = now()
+                        """, (pid,))
+        logger.info("Neon delete_project_row (tombstone) %s", pid)
+        return True
+    except Exception as e:
+        logger.exception("Neon delete_project_row failed: %s", e)
+        return False
+
+
+def project_exists(project_id: str) -> bool:
+    """האם הפרויקט קיים ופעיל (לא מחוק) ב-Neon."""
+    if not is_configured():
+        return False
+    pid = (project_id or "").strip()
+    if not pid:
+        return False
+    try:
+        with _connect() as conn:
+            _ensure_projects_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM projects_registry "
+                    "WHERE project_id=%s AND deleted_at IS NULL", (pid,))
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.warning("Neon project_exists failed: %s", e)
+        return False
+
+
+def fetch_projects_overlay() -> tuple[pd.DataFrame, set[str]]:
+    """מחזיר (פרויקטים פעילים ב-Neon, קבוצת מזהי-פרויקט מחוקים) בחיבור אחד.
+
+    משמש את project_store למיזוג: Neon מנצח על קונפליקטים, פרויקטים מחוקים
+    מסוננים החוצה גם אם עדיין קיימים ב-xlsx המחויב.
+    """
+    active = pd.DataFrame(columns=_PROJECT_COLS)
+    deleted: set[str] = set()
+    if not is_configured():
+        return active, deleted
+    with _connect() as conn:  # שגיאות נזרקות לקורא — שיפול ל-xlsx
+        _ensure_projects_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_id, project_name, site_name, client_name, "
+                "status, start_date, end_date, notes FROM projects_registry "
+                "WHERE deleted_at IS NULL")
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT project_id FROM projects_registry "
+                "WHERE deleted_at IS NOT NULL")
+            deleted = {r[0] for r in cur.fetchall()}
+    if rows:
+        active = pd.DataFrame(rows, columns=_PROJECT_COLS)
+    return active, deleted
+
+
+def load_projects() -> pd.DataFrame:
+    """מחזיר את כל הפרויקטים הפעילים מ-Neon (ללא tombstones)."""
+    active, _ = fetch_projects_overlay()
+    return active
+
+
+def sync_projects_from_df(df: pd.DataFrame) -> dict:
+    """דוחף את כל שורות ה-DataFrame ל-Neon (upsert). לסנכרון xlsx → ענן.
+
+    Returns:
+        dict: {total, verified, failed:[project_id,...]}.
+    """
+    out = {"total": 0, "verified": 0, "failed": []}
+    if df is None or df.empty or not is_configured():
+        return out
+    for _, r in df.iterrows():
+        out["total"] += 1
+        res = save_project(r.to_dict())
+        if res.get("verified"):
+            out["verified"] += 1
+        else:
+            out["failed"].append(str(r.get("project_id")))
+    return out

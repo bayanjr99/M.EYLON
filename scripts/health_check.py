@@ -284,6 +284,24 @@ def check_neon() -> int:
         print("    (אין הזנות ידניות ב-Neon עדיין.)")
     else:
         print(f"\n    סה\"כ ב-Neon: {total_neon} הזנות ידניות.")
+
+    # ── רישום פרויקטים ב-Neon (התמדת עריכות שם-לקוח/סטטוס) ──
+    try:
+        proj_df, deleted = cloud_db.fetch_projects_overlay()
+    except Exception as e:
+        warnings += 1
+        print(f"\n[!] כשל בקריאת projects_registry מ-Neon ({e}).")
+        return warnings
+
+    print(f"\n    פרויקטים ב-Neon: {len(proj_df)} פעילים"
+          f"  | מחוקים (tombstone): {len(deleted)}")
+    xlsx_only = sorted(set(reg_ids) - set(proj_df["project_id"].astype(str))
+                       - set(deleted)) if not proj_df.empty else \
+        sorted(set(reg_ids) - set(deleted))
+    if xlsx_only:
+        print(f"    פרויקטים ב-xlsx שטרם נשמרו ל-Neon ({len(xlsx_only)}): "
+              f"{', '.join(xlsx_only)}")
+        print("      → עריכתם באתר תישמר; לסנכרון יזום: scripts/sync_registry_to_neon.py")
     return warnings
 
 

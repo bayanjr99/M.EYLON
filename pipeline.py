@@ -99,6 +99,18 @@ def list_available_projects() -> list[dict]:
     Returns:
         רשימת dicts עם: project_id, project_name, site_name (לסינון solar), status.
     """
+    # דרך project_store — מקור-לאמת מאוחד (Neon אם מוגדר, אחרת xlsx). כך
+    # עריכות שנשמרו בענן (שם לקוח/סטטוס) מופיעות גם בסיידבר וב-build_master.
+    try:
+        from core import project_store
+        df = project_store.load_projects_registry()
+        if df is None or df.empty:
+            return []
+        return df.to_dict(orient="records")
+    except Exception as e:
+        logger.exception("Failed to load projects via project_store: %s", e)
+
+    # fallback ישיר ל-xlsx אם משהו נכשל בשכבת project_store
     if not PROJECTS_REGISTRY.exists():
         logger.warning("projects_registry.xlsx not found at %s", PROJECTS_REGISTRY)
         return []

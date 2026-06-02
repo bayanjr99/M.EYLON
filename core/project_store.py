@@ -180,8 +180,8 @@ REGISTRY_COLS = ["project_id", "project_name", "site_name", "client_name",
                  "status", "start_date", "end_date", "notes"]
 
 
-def load_projects_registry() -> pd.DataFrame:
-    """טוען את projects_registry.xlsx. מנרמל סטטוס + ממלא עמודות חסרות."""
+def _load_registry_xlsx() -> pd.DataFrame:
+    """טוען את projects_registry.xlsx בלבד. מנרמל סטטוס + ממלא עמודות חסרות."""
     if not PROJECTS_REGISTRY.exists():
         logger.warning("projects_registry.xlsx not found at %s", PROJECTS_REGISTRY)
         return pd.DataFrame(columns=REGISTRY_COLS)
@@ -196,6 +196,45 @@ def load_projects_registry() -> pd.DataFrame:
     except Exception as e:
         logger.exception("Failed to load projects_registry: %s", e)
         return pd.DataFrame(columns=REGISTRY_COLS)
+
+
+def load_projects_registry() -> pd.DataFrame:
+    """טוען את רשימת הפרויקטים. מקור-לאמת: Neon אם מוגדר, אחרת ה-xlsx.
+
+    בענן ה-xlsx זמני (נמחק ב-reboot), ולכן עריכות נשמרות ב-Neon. הטעינה
+    ממזגת: Neon מנצח על קונפליקטים (פרויקט שנערך באתר), ומוסיף פרויקטים
+    שקיימים רק ב-xlsx (פרויקטים שנדחפו מקומית) — למעט כאלה שסומנו כמחוקים
+    ב-Neon (tombstone). אם Neon לא מוגדר/לא זמין — נופלים חזרה ל-xlsx בלבד.
+    """
+    xlsx_df = _load_registry_xlsx()
+    try:
+        from core import cloud_db
+    except Exception:
+        return xlsx_df
+    if not cloud_db.is_configured():
+        return xlsx_df
+    try:
+        neon_df, deleted = cloud_db.fetch_projects_overlay()
+    except Exception as e:
+        logger.warning("Neon registry overlay failed — using xlsx: %s", e)
+        return xlsx_df
+
+    if neon_df is None:
+        neon_df = pd.DataFrame(columns=REGISTRY_COLS)
+    for c in REGISTRY_COLS:
+        if c not in neon_df.columns:
+            neon_df[c] = ""
+    neon_df = neon_df[REGISTRY_COLS].copy()
+    neon_df["status"] = neon_df["status"].astype(str).apply(validate_project_status)
+
+    neon_ids = set(neon_df["project_id"].astype(str))
+    deleted = {str(d) for d in (deleted or set())}
+    xlsx_ids = xlsx_df["project_id"].astype(str) if not xlsx_df.empty else pd.Series([], dtype=str)
+    extra = xlsx_df[~xlsx_ids.isin(neon_ids) & ~xlsx_ids.isin(deleted)] \
+        if not xlsx_df.empty else xlsx_df
+
+    merged = pd.concat([neon_df, extra], ignore_index=True)
+    return merged[REGISTRY_COLS]
 
 
 def _save_projects_registry(df: pd.DataFrame) -> None:
@@ -290,7 +329,7 @@ def verify_project_persisted(project_id: str, expected: dict | None = None) -> d
         dict: {ok, in_registry, folder_exists, meta_exists, mismatches:[...]}.
     """
     result = {"ok": False, "in_registry": False, "folder_exists": False,
-              "meta_exists": False, "mismatches": []}
+              "meta_exists": False, "mismatches": [], "neon_ok": True}
     pid = (project_id or "").strip()
     if not pid:
         return result
@@ -308,8 +347,17 @@ def verify_project_persisted(project_id: str, expected: dict | None = None) -> d
             if k in REGISTRY_COLS and not _field_matches(k, v, saved.get(k)):
                 result["mismatches"].append(k)
 
+    # בענן: ההתמדה האמיתית היא ב-Neon. אם מוגדר — חייב להתקיים שם.
+    try:
+        from core import cloud_db
+        if cloud_db.is_configured():
+            result["neon_ok"] = cloud_db.project_exists(pid)
+    except Exception:
+        result["neon_ok"] = False
+
     result["ok"] = (result["in_registry"] and result["folder_exists"]
-                    and result["meta_exists"] and not result["mismatches"])
+                    and result["meta_exists"] and not result["mismatches"]
+                    and result["neon_ok"])
     return result
 
 
@@ -341,6 +389,31 @@ def get_project_by_id(project_id: str) -> dict | None:
         if k not in row or not row.get(k):
             row[k] = v
     return row
+
+
+# ── Neon write-through (התמדה קבועה בענן) ─────────────────────
+def _neon_write_through(row: dict) -> str | None:
+    """כותב שורת פרויקט ל-Neon ומאמת. מחזיר הודעת-שגיאה אם נכשל, אחרת None.
+
+    כש-Neon לא מוגדר — חוזר None (מצב מקומי, אין מה לעשות). כש-Neon מוגדר
+    אך השמירה/האימות נכשלו — מחזיר הודעה כדי שלא נצהיר "נשמר" כוזב.
+    """
+    try:
+        from core import cloud_db
+    except Exception:
+        return None
+    if not cloud_db.is_configured():
+        return None
+    try:
+        res = cloud_db.save_project(row)
+    except Exception as e:
+        logger.exception("Neon write-through failed: %s", e)
+        return f"שמירה בענן (Neon) נכשלה: {e}"
+    if not res.get("verified"):
+        logger.error("Neon write-through not verified: %s", res)
+        return ("הנתונים נשמרו מקומית אך לא אומתו בענן (Neon). "
+                "ייתכן בעיית חיבור — נסה שוב או בדוק את NEON_DATABASE_URL.")
+    return None
 
 
 # ── Create project ────────────────────────────────────────────
@@ -410,6 +483,12 @@ def create_project(project_data: dict) -> tuple[bool, str, str]:
     except Exception as e:
         logger.exception("Failed to create project folders: %s", e)
         return False, f"הרגיסטרי עודכן אבל יצירת תיקיות נכשלה: {e}", pid
+
+    # write-through ל-Neon — בענן ה-xlsx/meta זמניים ויימחקו ב-reboot;
+    # רק שמירה ל-Neon שורדת. אם מוגדר אך לא אומת — לא מצהירים "נשמר".
+    neon_err = _neon_write_through(new_row)
+    if neon_err:
+        return False, neon_err, pid
 
     # read-back: לא להחזיר הצלחה לפני קריאה חוזרת מהדיסק שמאמתת שהכל נשמר
     check = verify_project_persisted(pid, new_row)
@@ -501,6 +580,12 @@ def update_project(project_id: str, updated_data: dict) -> tuple[bool, str]:
         logger.exception("Failed to write project_meta.json: %s", e)
         return False, f"הרגיסטרי עודכן אבל כתיבת project_meta.json נכשלה: {e}"
 
+    # write-through ל-Neon (כל השורה המעודכנת) — בענן זו השמירה היחידה
+    # ששורדת reboot. אם מוגדר אך לא אומת — לא מצהירים "נשמר".
+    neon_err = _neon_write_through(row)
+    if neon_err:
+        return False, neon_err
+
     # read-back: לא להחזיר הצלחה לפני קריאה חוזרת מהדיסק שמאמתת את השינוי
     check = verify_project_persisted(pid, normalized)
     if not check["ok"]:
@@ -567,6 +652,15 @@ def delete_project(project_id: str,
     except Exception as e:
         logger.exception("Failed to write registry on delete: %s", e)
         return False, f"שגיאה בכתיבת הרגיסטרי: {e}", None
+
+    # שלב 1b: tombstone ב-Neon — כדי שהפרויקט לא "יצוף מחדש" בענן מתוך
+    # ה-xlsx המחויב אחרי reboot. כשל כאן לא חוסם את המחיקה המקומית.
+    try:
+        from core import cloud_db
+        if cloud_db.is_configured() and not cloud_db.delete_project_row(pid):
+            logger.warning("Neon tombstone failed for %s (local delete proceeds)", pid)
+    except Exception as e:
+        logger.warning("Neon delete_project_row error for %s: %s", pid, e)
 
     # שלב 2: העברת התיקייה לסל מיחזור (אופציונלי)
     trash_path: str | None = None
