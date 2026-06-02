@@ -6,7 +6,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from core import budget_db
+from core import budget_db, cloud_db
 from ui.components import ins, sec
 from ui.formatters import format_currency, format_percent, display_dataframe
 
@@ -29,6 +29,14 @@ def render_budget_tab(df: pd.DataFrame, project_meta: dict) -> None:
     """טאב תקציב מול ביצוע."""
     project_id = project_meta["project_id"]
     meta = budget_db.get_metadata(project_id) or {}
+
+    # מגן ייצוב: התקציב נשמר ל-SQLite מקומי שאינו מסונכרן ל-Neon. בענן
+    # מערכת-הקבצים זמנית ולכן הזנות אלו עלולות להימחק ב-reboot/redeploy.
+    if cloud_db.is_configured():
+        ins("amber", "⚠️", "שימו לב: מסך זה עדיין לא מותמד בענן",
+            "נתוני התקציב נשמרים מקומית (SQLite) ולא ל-Neon. בהרצה בענן הם "
+            "עלולים להימחק ב-reboot/redeploy. עד שתושלם ההתמדה — שמרו גיבוי "
+            "חיצוני של נתוני התקציב.")
 
     # ── 1. פרטי הפרויקט / חוזה ──
     sec("פרטי פרויקט וחוזה")
